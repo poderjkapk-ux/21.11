@@ -479,6 +479,13 @@ def register_admin_handlers(dp: Dispatcher):
     @dp.callback_query(F.data.startswith("select_courier_"))
     async def select_courier_start(callback: CallbackQuery, session: AsyncSession):
         order_id = int(callback.data.split("_")[2])
+        
+        # --- FIX START: Отримуємо об'єкт замовлення ---
+        order = await session.get(Order, order_id)
+        if not order:
+            return await callback.answer("Замовлення не знайдено!", show_alert=True)
+        # --- FIX END --------------------------------
+
         courier_roles_res = await session.execute(select(Role.id).where(Role.can_be_assigned == True))
         courier_role_ids = courier_roles_res.scalars().all()
         
@@ -487,6 +494,7 @@ def register_admin_handlers(dp: Dispatcher):
         couriers = (await session.execute(select(Employee).where(Employee.role_id.in_(courier_role_ids), Employee.is_on_shift == True).order_by(Employee.full_name))).scalars().all()
         
         kb = InlineKeyboardBuilder()
+        # Тепер змінна order визначена
         text = f"<b>Замовлення #{order.id}</b>\nВиберіть кур'єра (🟢 На зміні):"
         if not couriers: text = "❌ Немає кур'єрів на зміні."
         else:
