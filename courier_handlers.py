@@ -16,10 +16,11 @@ from typing import Dict, Any, Optional, List
 from urllib.parse import quote_plus
 import re 
 import os
-from decimal import Decimal  # <--- ЗМІНЕНО: Додано імпорт
+from decimal import Decimal
 
 from models import Employee, Order, OrderStatus, Settings, OrderStatusHistory, Table, Category, Product, OrderItem
-from notification_manager import notify_new_order_to_staff, notify_all_parties_on_status_change
+# Додано notify_station_completion
+from notification_manager import notify_new_order_to_staff, notify_all_parties_on_status_change, notify_station_completion
 # --- КАСА: Імпорт сервісів ---
 from cash_service import link_order_to_shift, register_employee_debt
 
@@ -545,6 +546,7 @@ def register_courier_handlers(dp_admin: Dispatcher):
             joinedload(Order.status), 
             joinedload(Order.table), 
             joinedload(Order.accepted_by_waiter),
+            joinedload(Order.courier), # Додаємо courier
             selectinload(Order.items)
         ])
         if not order: return await callback.answer("Замовлення не знайдено.")
@@ -552,10 +554,13 @@ def register_courier_handlers(dp_admin: Dispatcher):
         ready_status = await session.scalar(select(OrderStatus).where(OrderStatus.name == "Готовий до видачі").limit(1))
         if not ready_status: return await callback.answer("Статус 'Готовий до видачі' не налаштовано.", show_alert=True)
         
-        # Встановлюємо флаги готовності цехів
+        # Встановлюємо флаги готовності цехів та перевіряємо чи не було натиснуто раніше
+        already_done = False
         if area == 'kitchen':
+            if order.kitchen_done: already_done = True
             order.kitchen_done = True
         elif area == 'bar':
+            if order.bar_done: already_done = True
             order.bar_done = True
             
         # Перевіряємо, чи все замовлення готове
@@ -581,12 +586,14 @@ def register_courier_handlers(dp_admin: Dispatcher):
         
         await session.commit()
         
-        # Сповіщення надсилаємо в будь-якому випадку (щоб офіціант знав, що частина готова, якщо ми це реалізуємо)
-        # Але в поточному notification_manager повідомлення про "Готово до видачі" йде тільки при зміні статусу.
-        # Тому якщо статус не змінився (чекаємо інший цех), сповіщення не піде.
-        # Можна додати проміжне сповіщення тут, якщо хочете.
+        # --- НОВА ЛОГІКА: Сповіщення про готовність цеху ---
+        # Відправляємо, якщо цей цех ще не був позначений як готовий (щоб уникнути дублів)
+        if not already_done:
+            await notify_station_completion(callback.bot, order, area, session)
+        # --------------------------------------------------
         
-        if is_fully_ready:
+        # Якщо все повністю готове, спрацює стандартне сповіщення про зміну статусу
+        if is_fully_ready and old_status_name != ready_status.name:
             await notify_all_parties_on_status_change(
                 order=order, 
                 old_status_name=old_status_name,

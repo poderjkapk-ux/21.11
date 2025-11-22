@@ -206,6 +206,51 @@ async def send_group_notification(bot: Bot, order: Order, items: list, role_filt
                 logger.error(f"Не вдалося відправити замовлення працівнику {emp.id}: {e}")
 
 
+async def notify_station_completion(bot: Bot, order: Order, area: str, session: AsyncSession):
+    """
+    Сповіщає офіціанта або кур'єра, що конкретний цех (Кухня або Бар) виконав свою частину.
+    Це дозволяє забирати готові страви/напої, не чекаючи повної готовності замовлення.
+    """
+    # Завантажуємо необхідні дані про виконавців
+    await session.refresh(order, ['table', 'accepted_by_waiter', 'courier'])
+    
+    source_label = "🍳 КУХНЯ" if area == 'kitchen' else "🍹 БАР"
+    
+    # Формуємо текст повідомлення
+    table_info = f" (Стіл: {html.quote(order.table.name)})" if order.table else ""
+    order_info = f"<b>Замовлення #{order.id}</b>{table_info}"
+    
+    message_text = f"✅ <b>{source_label} ГОТОВА!</b>\n{order_info}\n<i>Можна забирати частину замовлення.</i>"
+
+    # Визначаємо отримувачів
+    target_chat_ids = set()
+
+    # 1. Якщо це замовлення в закладі - сповіщаємо офіціанта
+    if order.order_type == 'in_house' and order.accepted_by_waiter and order.accepted_by_waiter.telegram_user_id:
+        target_chat_ids.add(order.accepted_by_waiter.telegram_user_id)
+    
+    # 2. Якщо це доставка - сповіщаємо кур'єра
+    if order.is_delivery and order.courier and order.courier.telegram_user_id:
+        target_chat_ids.add(order.courier.telegram_user_id)
+
+    # 3. Якщо ніхто не закріплений (або самовивіз без кур'єра), можна сповістити операторів
+    if not target_chat_ids:
+        admin_chat_id_str = os.environ.get('ADMIN_CHAT_ID')
+        if admin_chat_id_str:
+             # Додаємо позначку, що це для адміністратора
+             message_text = f"⚠️ {message_text}\n(Виконавець не призначений)"
+             try:
+                 target_chat_ids.add(int(admin_chat_id_str))
+             except ValueError: pass
+
+    # Відправка повідомлень
+    for chat_id in target_chat_ids:
+        try:
+            await bot.send_message(chat_id, message_text)
+        except Exception as e:
+            logger.error(f"Не вдалося надіслати сповіщення про готовність цеху {area} користувачу {chat_id}: {e}")
+
+
 async def notify_all_parties_on_status_change(
     order: Order,
     old_status_name: str,
