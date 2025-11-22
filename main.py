@@ -13,7 +13,7 @@ from typing import Dict, Any, Generator, Optional, List
 from datetime import date, datetime, timedelta
 import html
 import json
-from decimal import Decimal # <--- ДОДАНО: Імпорт Decimal
+from decimal import Decimal 
 from dotenv import load_dotenv
 from urllib.parse import quote_plus as url_quote_plus
 
@@ -788,6 +788,14 @@ async def get_web_ordering_page(session: AsyncSession = Depends(get_db_session))
         social_links.append(f'<a href="{html.escape(settings.facebook_url)}" target="_blank"><i class="fa-brands fa-facebook"></i></a>')
     
     social_links_html = "".join(social_links)
+    
+    # --- Нові параметри ---
+    category_nav_bg_color = settings.category_nav_bg_color or "#ffffff"
+    category_nav_text_color = settings.category_nav_text_color or "#333333"
+    header_image_url = settings.header_image_url or "" 
+    wifi_ssid = html.escape(settings.wifi_ssid or "Не налаштовано")
+    wifi_password = html.escape(settings.wifi_password or "")
+    # --------------------
 
     return HTMLResponse(content=WEB_ORDER_HTML.format(
         logo_html=logo_html,
@@ -808,7 +816,13 @@ async def get_web_ordering_page(session: AsyncSession = Depends(get_db_session))
         footer_address=html.escape(settings.footer_address or "Адреса не вказана"),
         footer_phone=html.escape(settings.footer_phone or ""),
         working_hours=html.escape(settings.working_hours or ""),
-        social_links_html=social_links_html
+        social_links_html=social_links_html,
+        # Нові змінні
+        category_nav_bg_color=category_nav_bg_color,
+        category_nav_text_color=category_nav_text_color,
+        header_image_url=header_image_url,
+        wifi_ssid=wifi_ssid,
+        wifi_password=wifi_password
     ))
 
 
@@ -1408,7 +1422,7 @@ async def delete_employee(employee_id: int, session: AsyncSession = Depends(get_
 async def admin_reports_menu(session: AsyncSession = Depends(get_db_session), username: str = Depends(check_credentials)):
     settings = await get_settings(session)
     body = """<div class="card"><h2>Доступні звіти</h2><ul><li><a href="/admin/reports/couriers">Звіт по замовленнях кур'єрів</a></li></ul></div>"""
-    active_classes = {key: "" for key in ["main_active", "orders_active", "clients_active", "tables_active", "products_active", "categories_active", "menu_active", "employees_active", "statuses_active", "settings_active", "design_active"]}
+    active_classes = {key: "" for key in ["main_active", "orders_active", "clients_active", "tables_active", "products_active", "categories_active", "menu_active", "employees_active", "statuses_active", "reports_active", "settings_active", "design_active"]}
     active_classes["reports_active"] = "active"
     return HTMLResponse(ADMIN_HTML_TEMPLATE.format(title="Звіти", body=body, site_title=settings.site_title, **active_classes))
 
@@ -1426,9 +1440,32 @@ async def report_couriers(date_from_str: str = Query(None, alias="date_from"), d
 
     report_rows = "".join([f'<tr><td>{html.escape(row.full_name)}</td><td>{row.cnt}</td></tr>' for row in report_data]) or '<tr><td colspan="2">Немає даних</td></tr>'
     body = ADMIN_REPORTS_BODY.format(date_from=date_from.strftime("%Y-%m-%d"), date_to=date_to.strftime("%Y-%m-%d"), date_from_formatted=date_from.strftime("%d.%m.%Y"), date_to_formatted=date_to.strftime("%d.%m.%Y"), report_rows=report_rows)
-    active_classes = {key: "" for key in ["main_active", "orders_active", "clients_active", "tables_active", "products_active", "categories_active", "menu_active", "employees_active", "statuses_active", "settings_active", "design_active"]}
+    active_classes = {key: "" for key in ["main_active", "orders_active", "clients_active", "tables_active", "products_active", "categories_active", "menu_active", "employees_active", "statuses_active", "reports_active", "settings_active", "design_active"]}
     active_classes["reports_active"] = "active"
     return HTMLResponse(ADMIN_HTML_TEMPLATE.format(title="Звіт по кур'єрах", body=body, site_title=settings.site_title, **active_classes))
+
+# --- ОБРОБНИК GET ЗАПИТУ ДЛЯ НАЛАШТУВАНЬ ---
+@app.get("/admin/settings", response_class=HTMLResponse)
+async def admin_settings_page(saved: bool = False, session: AsyncSession = Depends(get_db_session), username: str = Depends(check_credentials)):
+    settings = await get_settings(session)
+    
+    current_logo_html = f'<img src="/{settings.logo_url}" alt="Лого" style="height: 50px;">' if settings.logo_url else "Логотип не завантажено"
+    cache_buster = secrets.token_hex(4)
+    
+    body = ADMIN_SETTINGS_BODY.format(
+        current_logo_html=current_logo_html,
+        cache_buster=cache_buster
+    )
+    
+    if saved:
+        body = "<div class='card' style='background:#d4edda; color:#155724; padding:10px; margin-bottom:20px;'>✅ Налаштування збережено!</div>" + body
+
+    active_classes = {key: "" for key in ["main_active", "orders_active", "clients_active", "tables_active", "products_active", "categories_active", "menu_active", "employees_active", "statuses_active", "reports_active", "settings_active", "design_active"]}
+    active_classes["settings_active"] = "active"
+
+    return HTMLResponse(ADMIN_HTML_TEMPLATE.format(
+        title="Налаштування", body=body, site_title=settings.site_title or "Назва", **active_classes
+    ))
 
 @app.post("/admin/settings")
 async def save_admin_settings(session: AsyncSession = Depends(get_db_session), username: str = Depends(check_credentials), logo_file: UploadFile = File(None), apple_touch_icon: UploadFile = File(None), favicon_32x32: UploadFile = File(None), favicon_16x16: UploadFile = File(None), favicon_ico: UploadFile = File(None), site_webmanifest: UploadFile = File(None)):

@@ -4,7 +4,7 @@ import html as html_module
 import json
 import logging
 import os
-from decimal import Decimal # <--- ДОДАНО
+from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException, Request, Body
 from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -69,7 +69,7 @@ async def get_in_house_menu(access_token: str, request: Request, session: AsyncS
     active_orders = active_orders_res.scalars().all()
 
     history_list = []
-    grand_total = Decimal('0.00') # <--- ЗМІНЕНО
+    grand_total = Decimal('0.00')
 
     for o in active_orders:
         grand_total += o.total_price
@@ -91,6 +91,7 @@ async def get_in_house_menu(access_token: str, request: Request, session: AsyncS
 
     site_title = settings.site_title or "Назва"
     
+    # --- Основні кольори ---
     primary_color_val = settings.primary_color or "#5a5a5a"
     secondary_color_val = settings.secondary_color or "#eeeeee"
     background_color_val = settings.background_color or "#f4f4f4"
@@ -98,6 +99,16 @@ async def get_in_house_menu(access_token: str, request: Request, session: AsyncS
     footer_bg_color_val = settings.footer_bg_color or "#333333"
     footer_text_color_val = settings.footer_text_color or "#ffffff"
 
+    # --- Нові налаштування дизайну ---
+    category_nav_bg_color = settings.category_nav_bg_color or "#ffffff"
+    category_nav_text_color = settings.category_nav_text_color or "#333333"
+    header_image_url = settings.header_image_url or "" # URL фонового зображення шапки
+    
+    # --- Wi-Fi ---
+    wifi_ssid = html_module.escape(settings.wifi_ssid or "Не налаштовано")
+    wifi_password = html_module.escape(settings.wifi_password or "")
+
+    # --- Шрифти ---
     font_family_sans_val = settings.font_family_sans or "Golos Text"
     font_family_serif_val = settings.font_family_serif or "Playfair Display"
 
@@ -115,11 +126,12 @@ async def get_in_house_menu(access_token: str, request: Request, session: AsyncS
         logo_html=logo_html,
         menu_data=menu_data,
         history_data=history_data,   
-        grand_total=float(grand_total), # Передаємо як float     
+        grand_total=float(grand_total),     
         site_title=html_module.escape(site_title),
         seo_description=html_module.escape(settings.seo_description or ""),
         seo_keywords=html_module.escape(settings.seo_keywords or ""),
         
+        # Кольори
         primary_color_val=primary_color_val,
         secondary_color_val=secondary_color_val,
         background_color_val=background_color_val,
@@ -127,11 +139,20 @@ async def get_in_house_menu(access_token: str, request: Request, session: AsyncS
         footer_bg_color_val=footer_bg_color_val,
         footer_text_color_val=footer_text_color_val,
         
+        # Нові змінні для шаблону
+        category_nav_bg_color=category_nav_bg_color,
+        category_nav_text_color=category_nav_text_color,
+        header_image_url=header_image_url,
+        wifi_ssid=wifi_ssid,
+        wifi_password=wifi_password,
+        
+        # Шрифти
         font_family_sans_val=font_family_sans_val,
         font_family_serif_val=font_family_serif_val,
         font_family_sans_encoded=url_quote_plus(font_family_sans_val),
         font_family_serif_encoded=url_quote_plus(font_family_serif_val),
 
+        # Контакти
         footer_address=html_module.escape(settings.footer_address or "Адреса не вказана"),
         footer_phone=html_module.escape(settings.footer_phone or ""),
         working_hours=html_module.escape(settings.working_hours or ""),
@@ -157,7 +178,7 @@ async def get_table_updates(table_id: int, session: AsyncSession = Depends(get_d
     active_orders = active_orders_res.scalars().all()
 
     history_list = []
-    grand_total = Decimal('0.00') # <--- ЗМІНЕНО
+    grand_total = Decimal('0.00')
 
     for o in active_orders:
         grand_total += o.total_price
@@ -167,7 +188,7 @@ async def get_table_updates(table_id: int, session: AsyncSession = Depends(get_d
         history_list.append({
             "id": o.id,
             "products": products_str,
-            "total_price": float(o.total_price), # Decimal -> float
+            "total_price": float(o.total_price),
             "status": status_name,
             "time": o.created_at.strftime('%H:%M')
         })
@@ -240,7 +261,7 @@ async def request_bill(
         select(Order).where(Order.table_id == table.id, Order.status_id.not_in(final_status_ids))
     )
     active_orders = active_orders_res.scalars().all()
-    total_bill = sum((o.total_price for o in active_orders), start=Decimal('0.00')) # <--- ЗМІНЕНО
+    total_bill = sum((o.total_price for o in active_orders), start=Decimal('0.00'))
 
     waiters = table.assigned_waiters
     method_text = "💳 Картка" if method == 'card' else "💵 Готівка"
@@ -290,7 +311,6 @@ async def place_in_house_order(
     if not table: raise HTTPException(status_code=404, detail="Столик не знайдено.")
     if not items: raise HTTPException(status_code=400, detail="Замовлення порожнє.")
 
-    # ВАЖЛИВО: Перетворюємо ID в int, щоб уникнути помилки Postgres "operator does not exist: integer = character varying"
     try:
         product_ids = [int(item.get('id')) for item in items if item.get('id') is not None]
     except (ValueError, TypeError):
@@ -299,7 +319,7 @@ async def place_in_house_order(
     products_res = await session.execute(select(Product).where(Product.id.in_(product_ids)))
     db_products = {str(p.id): p for p in products_res.scalars().all()}
 
-    total_price = Decimal('0.00') # <--- ЗМІНЕНО
+    total_price = Decimal('0.00')
     new_order_items = []
     products_str_for_msg = []
 
@@ -308,7 +328,7 @@ async def place_in_house_order(
         qty = int(item.get('quantity', 1))
         if pid in db_products and qty > 0:
             product = db_products[pid]
-            total_price += product.price * qty # product.price is Decimal
+            total_price += product.price * qty
             
             products_str_for_msg.append(f"{product.name} x {qty}")
             
@@ -316,7 +336,7 @@ async def place_in_house_order(
                 product_id=product.id,
                 product_name=product.name,
                 quantity=qty,
-                price_at_moment=product.price, # Decimal
+                price_at_moment=product.price,
                 preparation_area=product.preparation_area
             ))
 
@@ -330,7 +350,7 @@ async def place_in_house_order(
     order = Order(
         customer_name=f"Стіл: {table.name}", phone_number=f"table_{table.id}",
         address=None, 
-        total_price=total_price, # Decimal
+        total_price=total_price,
         is_delivery=False, delivery_time="In House", order_type="in_house",
         table_id=table.id, status_id=new_status.id,
         items=new_order_items

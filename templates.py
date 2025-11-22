@@ -1210,7 +1210,6 @@ ADMIN_CLIENT_DETAIL_BODY = """
     }}
 </script>
 """
-# ... (продовження templates.py) ...
 
 IN_HOUSE_MENU_HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -1240,6 +1239,12 @@ IN_HOUSE_MENU_HTML_TEMPLATE = """
         --text-color: {text_color_val};
         --footer-bg-color: {footer_bg_color_val};
         --footer-text-color: {footer_text_color_val};
+        
+        /* Navigation settings */
+        --nav-bg-color: {category_nav_bg_color};
+        --nav-text-color: {category_nav_text_color};
+        
+        --header-bg-image: url('/{header_image_url}');
         
         --primary-hover-color: color-mix(in srgb, {primary_color_val}, black 10%);
         --primary-glow-color: {primary_color_val}26;
@@ -1274,25 +1279,53 @@ IN_HOUSE_MENU_HTML_TEMPLATE = """
             min-height: 100vh;
         }}
         .container {{ width: 100%; margin: 0 auto; padding: 0; }}
-        header {{ text-align: center; padding: 40px var(--side-padding) 20px; }}
+        
+        /* --- HEADER with Image --- */
+        header {{ 
+            text-align: center; 
+            padding: 60px var(--side-padding) 40px;
+            position: relative;
+            background-image: var(--header-bg-image);
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
+            color: white; /* Always white on image */
+        }}
+        header::before {{
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0, 0, 0, 0.5); /* Overlay */
+            z-index: 0;
+        }}
+        .header-logo-container, header h1, header h2, header p, .table-name-header {{
+            position: relative;
+            z-index: 1;
+        }}
+        
         .header-logo-container {{ display: inline-block; margin-bottom: 25px; }}
         .header-logo {{ height: 100px; width: auto; }}
         header h1 {{
             font-size: clamp(2.5em, 5vw, 3.5em);
-            color: var(--text-color); margin: 0; font-weight: 700;
+            margin: 0; font-weight: 700;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.5);
         }}
         header p {{
             font-size: clamp(1em, 2vw, 1.2em);
-            color: #888; margin-top: 10px; letter-spacing: 4px; text-transform: uppercase;
+            margin-top: 10px; letter-spacing: 4px; text-transform: uppercase;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.5);
         }}
         .table-name-header {{
             font-size: clamp(1.2em, 2.5vw, 1.5em);
-            color: var(--primary-color); margin-top: 20px;
+            margin-top: 20px;
+            color: rgba(255,255,255,0.9); /* Light for visibility */
         }}
 
+        /* --- CATEGORY NAV --- */
         .category-nav {{
             display: flex; position: sticky; top: -1px;
-            background-color: rgba(255, 255, 255, 0.9); backdrop-filter: blur(12px);
+            background-color: var(--nav-bg-color); 
+            backdrop-filter: blur(12px);
             z-index: 100; animation: fadeIn 0.5s ease-out; overflow-x: auto;
             white-space: nowrap; -webkit-overflow-scrolling: touch; scrollbar-width: none;
             box-shadow: 0 4px 20px rgba(0,0,0,0.1);
@@ -1302,12 +1335,14 @@ IN_HOUSE_MENU_HTML_TEMPLATE = """
         }}
         .category-nav::-webkit-scrollbar {{ display: none; }}
         .category-nav a {{
-            color: var(--text-color); text-decoration: none; padding: 10px 25px;
-            border: 1px solid var(--border-color); border-radius: 20px;
+            color: var(--nav-text-color); text-decoration: none; padding: 10px 25px;
+            border: 1px solid transparent; border-radius: 20px;
             transition: all 0.3s ease; font-weight: 500; flex-shrink: 0; margin: 0 10px;
+            background: rgba(255,255,255,0.1); /* Slight background for better visibility */
         }}
         .category-nav a:first-child {{ margin-left: var(--side-padding); }}
         .category-nav a:last-child {{ margin-right: var(--side-padding); }}
+        
         .category-nav a:hover, .category-nav a.active {{
             background-color: var(--primary-color); color: var(--dark-text-for-accent);
             border-color: var(--primary-color); transform: scale(1.05); font-weight: 600;
@@ -1509,19 +1544,21 @@ IN_HOUSE_MENU_HTML_TEMPLATE = """
             transition: transform 0.2s, box-shadow 0.2s;
             color: white;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            background: var(--primary-color); /* Use primary color for both */
         }}
         
         .payment-option-btn:hover {{
             transform: translateY(-2px);
+            background: var(--primary-hover-color);
             box-shadow: 0 8px 15px rgba(0,0,0,0.15);
         }}
+        
+        /* Add subtle difference or border if needed, but kept same style as requested */
+        .btn-card {{ opacity: 0.9; }}
         
         .payment-option-btn:active {{
             transform: translateY(0);
         }}
-        
-        .btn-cash {{ background: linear-gradient(135deg, #2ecc71, #27ae60); }}
-        .btn-card {{ background: linear-gradient(135deg, #3498db, #2980b9); }}
         
         .payment-option-btn i {{ font-size: 1.3rem; }}
         
@@ -1602,6 +1639,16 @@ IN_HOUSE_MENU_HTML_TEMPLATE = """
             color: var(--dark-text-for-accent);
             transform: translateY(-3px);
         }}
+        
+        .wifi-card {{
+            background: rgba(255,255,255,0.05);
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 15px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }}
+        .wifi-card strong {{ color: var(--primary-color); }}
+        
         .footer-bottom {{
             text-align: center;
             margin-top: 40px;
@@ -1732,6 +1779,13 @@ IN_HOUSE_MENU_HTML_TEMPLATE = """
                  <div class="footer-contact-item">
                     <i class="fa-solid fa-clock"></i>
                     <span>{working_hours}</span>
+                </div>
+            </div>
+            <div class="footer-section">
+                <h4>Інтернет</h4>
+                <div class="wifi-card">
+                    <div><i class="fa-solid fa-wifi"></i> <strong>Wi-Fi:</strong> {wifi_ssid}</div>
+                    <div style="margin-top: 5px;"><i class="fa-solid fa-lock"></i> <strong>Pass:</strong> {wifi_password}</div>
                 </div>
             </div>
             <div class="footer-section">
@@ -2121,6 +2175,12 @@ WEB_ORDER_HTML = """
         --footer-bg-color: {footer_bg_color_val}; /* NEW */
         --footer-text-color: {footer_text_color_val}; /* NEW */
         
+        /* Navigation settings */
+        --nav-bg-color: {category_nav_bg_color};
+        --nav-text-color: {category_nav_text_color};
+        
+        --header-bg-image: url('/{header_image_url}');
+        
         --primary-hover-color: color-mix(in srgb, {primary_color_val}, black 10%);
         --primary-glow-color: {primary_color_val}26; 
       }}
@@ -2163,7 +2223,30 @@ WEB_ORDER_HTML = """
             margin: 0 auto; 
             padding: 0; 
         }}
-        header {{ text-align: center; padding: 40px var(--side-padding) 20px; }}
+        
+        /* --- HEADER with Image --- */
+        header {{ 
+            text-align: center; 
+            padding: 60px var(--side-padding) 40px;
+            position: relative;
+            background-image: var(--header-bg-image);
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
+            color: white; /* Always white on image */
+        }}
+        header::before {{
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0, 0, 0, 0.5); /* Overlay */
+            z-index: 0;
+        }}
+        .header-logo-container, header h1, .main-nav {{
+            position: relative;
+            z-index: 1;
+        }}
+        
         .header-logo-container {{
             display: inline-block;
             margin-bottom: 25px;
@@ -2175,9 +2258,9 @@ WEB_ORDER_HTML = """
         }}
         header h1 {{
             font-size: clamp(3em, 6vw, 4em);
-            color: var(--text-color);
             margin: 0;
             font-weight: 700;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.5);
         }}
 
         .main-nav {{
@@ -2214,7 +2297,7 @@ WEB_ORDER_HTML = """
             display: flex; 
             position: sticky; 
             top: -1px;
-            background-color: rgba(255, 255, 255, 0.9); 
+            background-color: var(--nav-bg-color);
             backdrop-filter: blur(12px);
             z-index: 100; 
             animation: fadeIn 0.5s ease-out; 
@@ -2230,9 +2313,10 @@ WEB_ORDER_HTML = """
         }}
         .category-nav::-webkit-scrollbar {{ display: none; }}
         .category-nav a {{
-            color: var(--text-color); text-decoration: none; padding: 10px 25px;
-            border: 1px solid var(--border-color); border-radius: 20px;
+            color: var(--nav-text-color); text-decoration: none; padding: 10px 25px;
+            border: 1px solid transparent; border-radius: 20px;
             transition: all 0.3s ease; font-weight: 500; flex-shrink: 0; margin: 0 10px;
+            background: rgba(255,255,255,0.1); /* Slight background for visibility */
         }}
          .category-nav a:first-child {{ margin-left: var(--side-padding); }}
          .category-nav a:last-child {{ margin-right: var(--side-padding); }}
@@ -2462,6 +2546,16 @@ WEB_ORDER_HTML = """
             color: var(--dark-text-for-accent);
             transform: translateY(-3px);
         }}
+        
+        .wifi-card {{
+            background: rgba(255,255,255,0.05);
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 15px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }}
+        .wifi-card strong {{ color: var(--primary-color); }}
+        
         .footer-bottom {{
             text-align: center;
             margin-top: 40px;
@@ -3014,7 +3108,7 @@ WEB_ORDER_HTML = """
 
 ADMIN_DESIGN_SETTINGS_BODY = """
 <div class="card">
-    <form action="/admin/design_settings" method="post">
+    <form action="/admin/design_settings" method="post" enctype="multipart/form-data">
         <h2><i class="fa-solid fa-file-signature"></i> Назви та SEO</h2>
         
         <label for="site_title">Назва сайту/закладу:</label>
@@ -3055,6 +3149,22 @@ ADMIN_DESIGN_SETTINGS_BODY = """
             </div>
         </div>
         
+        <h3 style="margin-top: 1rem;">Навігація по категоріям</h3>
+        <div class="form-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 15px;">
+            <div>
+                <label for="category_nav_bg_color">Колір фону (можна прозорий):</label>
+                <input type="color" id="category_nav_bg_color" name="category_nav_bg_color" value="{category_nav_bg_color}" style="width: 100%; height: 40px;">
+            </div>
+            <div>
+                <label for="category_nav_text_color">Колір тексту посилань:</label>
+                <input type="color" id="category_nav_text_color" name="category_nav_text_color" value="{category_nav_text_color}" style="width: 100%; height: 40px;">
+            </div>
+        </div>
+        
+        <h3 style="margin-top: 2rem;">Зображення Шапки (Header)</h3>
+        <label>Завантажте фонове зображення для шапки (Overlay буде додано автоматично):</label>
+        <input type="file" name="header_image_file" accept="image/*">
+        
         <div style="margin-top: 1rem;">
             <label for="font_family_sans">Основний шрифт (Без засічок):</label>
             <select id="font_family_sans" name="font_family_sans">
@@ -3082,6 +3192,19 @@ ADMIN_DESIGN_SETTINGS_BODY = """
                 <input type="text" id="working_hours" name="working_hours" value="{working_hours}" placeholder="Пн-Нд: 10:00 - 22:00">
             </div>
         </div>
+        
+        <h4 style="margin-top: 1rem;">Налаштування Wi-Fi (для QR меню)</h4>
+        <div class="form-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+            <div>
+                <label for="wifi_ssid"><i class="fa-solid fa-wifi"></i> Назва мережі (SSID):</label>
+                <input type="text" id="wifi_ssid" name="wifi_ssid" value="{wifi_ssid}" placeholder="Restaurant_WiFi">
+            </div>
+            <div>
+                <label for="wifi_password"><i class="fa-solid fa-lock"></i> Пароль:</label>
+                <input type="text" id="wifi_password" name="wifi_password" value="{wifi_password}" placeholder="securepass123">
+            </div>
+        </div>
+
         <div class="form-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-top: 10px;">
             <div>
                 <label for="instagram_url"><i class="fa-brands fa-instagram"></i> Instagram (посилання):</label>
