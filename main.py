@@ -13,6 +13,7 @@ from typing import Dict, Any, Generator, Optional, List
 from datetime import date, datetime, timedelta
 import html
 import json
+from decimal import Decimal # <--- ДОДАНО: Імпорт Decimal
 from dotenv import load_dotenv
 from urllib.parse import quote_plus as url_quote_plus
 
@@ -862,7 +863,7 @@ async def place_web_order(order_data: dict = Body(...), session: AsyncSession = 
     products_res = await session.execute(sa.select(Product).where(Product.id.in_(product_ids)))
     db_products = {str(p.id): p for p in products_res.scalars().all()}
 
-    total_price = 0
+    total_price = Decimal('0.00') # <--- ЗМІНЕНО: Ініціалізація як Decimal
     order_items_objects = []
 
     for item in items:
@@ -870,13 +871,14 @@ async def place_web_order(order_data: dict = Body(...), session: AsyncSession = 
         if pid in db_products:
             product = db_products[pid]
             qty = int(item.get('quantity', 1))
+            # product.price - це Decimal з БД, тому розрахунок буде точним
             total_price += product.price * qty
             
             order_items_objects.append(OrderItem(
                 product_id=product.id,
                 product_name=product.name,
                 quantity=qty,
-                price_at_moment=product.price,
+                price_at_moment=product.price, # <--- ЗМІНЕНО: Це Decimal
                 preparation_area=product.preparation_area
             ))
 
@@ -887,7 +889,8 @@ async def place_web_order(order_data: dict = Body(...), session: AsyncSession = 
 
     order = Order(
         customer_name=order_data.get('customer_name'), phone_number=order_data.get('phone_number'),
-        address=address, total_price=total_price,
+        address=address, 
+        total_price=total_price, # <--- ЗМІНЕНО: Це Decimal
         is_delivery=is_delivery, delivery_time=order_data.get('delivery_time', "Якнайшвидше"),
         order_type=order_type,
         payment_method=payment_method,
@@ -976,7 +979,7 @@ async def admin_products(page: int = Query(1, ge=1), q: str = Query(None, alias=
         <label for="name">Назва страви:</label><input type="text" id="name" name="name" required>
         <label for="description">Опис:</label><textarea id="description" name="description" rows="4"></textarea>
         <label for="image">Зображення:</label><input type="file" id="image" name="image" accept="image/*">
-        <label for="price">Ціна (в грн):</label><input type="number" id="price" name="price" min="1" required>
+        <label for="price">Ціна (в грн):</label><input type="number" id="price" name="price" min="1" step="0.01" required>
         <label for="preparation_area">Цех приготування:</label>
         <select id="preparation_area" name="preparation_area">
             <option value="kitchen">🍳 Кухня</option>
@@ -1000,7 +1003,7 @@ async def admin_products(page: int = Query(1, ge=1), q: str = Query(None, alias=
     return HTMLResponse(ADMIN_HTML_TEMPLATE.format(title="Управління стравами", body=body, site_title=settings.site_title or "Назва", **active_classes))
 
 @app.post("/admin/add_product")
-async def add_product(name: str = Form(...), price: int = Form(...), description: str = Form(""), category_id: int = Form(...), preparation_area: str = Form("kitchen"), image: UploadFile = File(None), session: AsyncSession = Depends(get_db_session), username: str = Depends(check_credentials)):
+async def add_product(name: str = Form(...), price: Decimal = Form(...), description: str = Form(""), category_id: int = Form(...), preparation_area: str = Form("kitchen"), image: UploadFile = File(None), session: AsyncSession = Depends(get_db_session), username: str = Depends(check_credentials)):
     if price <= 0: raise HTTPException(status_code=400, detail="Ціна повинна бути позитивною")
     image_url = None
     if image and image.filename:
@@ -1033,7 +1036,7 @@ async def get_edit_product_form(product_id: int, session: AsyncSession = Depends
         <label for="description">Опис:</label><textarea id="description" name="description" rows="4">{html.escape(product.description or '')}</textarea>
         <label for="image">Нове зображення:</label><input type="file" id="image" name="image" accept="image/*">
         {f'<p>Поточне зображення: <img src="/{product.image_url}" class="table-img"></p>' if product.image_url else ''}
-        <label for="price">Ціна (в грн):</label><input type="number" id="price" name="price" min="1" value="{product.price}" required>
+        <label for="price">Ціна (в грн):</label><input type="number" id="price" name="price" min="1" step="0.01" value="{product.price}" required>
         <label for="preparation_area">Цех приготування:</label><select id="preparation_area" name="preparation_area">{prep_options}</select>
         <label for="category_id">Категорія:</label><select id="category_id" name="category_id" required>{category_options}</select>
         <button type="submit">Зберегти зміни</button></form></div>"""
@@ -1042,7 +1045,7 @@ async def get_edit_product_form(product_id: int, session: AsyncSession = Depends
     return HTMLResponse(ADMIN_HTML_TEMPLATE.format(title="Редагування страви", body=body, site_title=settings.site_title or "Назва", **active_classes))
 
 @app.post("/admin/edit_product/{product_id}")
-async def edit_product(product_id: int, name: str = Form(...), price: int = Form(...), description: str = Form(""), category_id: int = Form(...), preparation_area: str = Form(...), image: UploadFile = File(None), session: AsyncSession = Depends(get_db_session), username: str = Depends(check_credentials)):
+async def edit_product(product_id: int, name: str = Form(...), price: Decimal = Form(...), description: str = Form(""), category_id: int = Form(...), preparation_area: str = Form(...), image: UploadFile = File(None), session: AsyncSession = Depends(get_db_session), username: str = Depends(check_credentials)):
     product = await session.get(Product, product_id)
     if not product: raise HTTPException(status_code=404, detail="Товар не знайдено")
 
@@ -1518,7 +1521,7 @@ async def _process_and_save_order(order: Order, data: dict, session: AsyncSessio
     if order.id:
         await session.execute(sa.delete(OrderItem).where(OrderItem.order_id == order.id))
     
-    total_price = 0
+    total_price = Decimal('0.00') # <--- ЗМІНЕНО: Ініціалізація як Decimal
     new_items = []
     
     if items_from_js:
@@ -1534,13 +1537,14 @@ async def _process_and_save_order(order: Order, data: dict, session: AsyncSessio
                 if product:
                     qty = int(item_data.get('quantity', 0))
                     if qty > 0:
+                        # product.price - це Decimal, тому розрахунок буде точним
                         total_price += product.price * qty
                         # Створюємо об'єкт OrderItem
                         new_items.append(OrderItem(
                             product_id=pid,
                             product_name=product.name,
                             quantity=qty,
-                            price_at_moment=product.price,
+                            price_at_moment=product.price, # <--- ЗМІНЕНО: Це Decimal
                             preparation_area=product.preparation_area
                         ))
 

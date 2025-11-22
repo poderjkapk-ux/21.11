@@ -27,7 +27,7 @@ async def get_any_open_shift(session: AsyncSession) -> CashShift | None:
     )
     return result.scalars().first()
 
-async def open_new_shift(session: AsyncSession, employee_id: int, start_cash: float) -> CashShift:
+async def open_new_shift(session: AsyncSession, employee_id: int, start_cash: Decimal) -> CashShift:
     """Відкриває нову касову зміну."""
     active_shift = await get_open_shift(session, employee_id)
     if active_shift:
@@ -41,7 +41,7 @@ async def open_new_shift(session: AsyncSession, employee_id: int, start_cash: fl
     new_shift = CashShift(
         employee_id=employee_id,
         start_time=datetime.now(),
-        start_cash=Decimal(str(start_cash)),
+        start_cash=start_cash,
         is_closed=False
     )
     session.add(new_shift)
@@ -86,11 +86,11 @@ async def register_employee_debt(session: AsyncSession, order: Order, employee_i
         logger.error(f"Співробітника {employee_id} не знайдено при реєстрації боргу.")
         return
 
-    # Перетворюємо в Decimal для точності
-    amount = Decimal(str(order.total_price))
+    # order.total_price це Decimal
+    amount = order.total_price
     
     # Оновлюємо баланс співробітника
-    employee.cash_balance = Decimal(employee.cash_balance) + amount
+    employee.cash_balance += amount
     
     # Позначаємо, що гроші за це замовлення ще не в касі
     order.is_cash_turned_in = False
@@ -117,10 +117,10 @@ async def process_handover(session: AsyncSession, cashier_shift_id: int, employe
     if not orders:
         raise ValueError("Немає доступних замовлень для здачі виручки.")
 
-    total_amount = Decimal(0)
+    total_amount = Decimal('0.00')
     
     for order in orders:
-        amount = Decimal(str(order.total_price))
+        amount = order.total_price
         total_amount += amount
         
         # Гроші потрапили в касу
@@ -132,9 +132,9 @@ async def process_handover(session: AsyncSession, cashier_shift_id: int, employe
             order.cash_shift_id = shift.id
 
     # Зменшуємо борг співробітника
-    employee.cash_balance = Decimal(employee.cash_balance) - total_amount
-    if employee.cash_balance < 0:
-        employee.cash_balance = Decimal(0) # Захист від мінуса
+    employee.cash_balance -= total_amount
+    if employee.cash_balance < Decimal('0.00'):
+        employee.cash_balance = Decimal('0.00') # Захист від мінуса
 
     # Додаємо транзакцію в касу (просто як лог події, для балансу використовується is_cash_turned_in)
     tx = CashTransaction(
@@ -165,11 +165,11 @@ async def get_shift_statistics(session: AsyncSession, shift_id: int):
     sales_res = await session.execute(sales_query)
     sales_data = sales_res.all()
 
-    total_sales_cash_orders = Decimal(0) # Всього продажів готівкою (в т.ч. ті, що у кур'єрів)
-    total_card_sales = Decimal(0)
+    total_sales_cash_orders = Decimal('0.00') # Всього продажів готівкою (в т.ч. ті, що у кур'єрів)
+    total_card_sales = Decimal('0.00')
 
     for method, amount in sales_data:
-        amount_decimal = Decimal(str(amount)) if amount else Decimal(0)
+        amount_decimal = amount if amount is not None else Decimal('0.00')
         if method == 'cash':
             total_sales_cash_orders += amount_decimal
         elif method == 'card':
@@ -186,12 +186,12 @@ async def get_shift_statistics(session: AsyncSession, shift_id: int):
     trans_res = await session.execute(trans_query)
     trans_data = trans_res.all()
 
-    service_in = Decimal(0)
-    service_out = Decimal(0)
-    handover_in = Decimal(0)
+    service_in = Decimal('0.00')
+    service_out = Decimal('0.00')
+    handover_in = Decimal('0.00')
 
     for t_type, amount in trans_data:
-        amount_decimal = Decimal(str(amount)) if amount else Decimal(0)
+        amount_decimal = amount if amount is not None else Decimal('0.00')
         if t_type == 'in':
             service_in += amount_decimal
         elif t_type == 'out':
@@ -209,11 +209,10 @@ async def get_shift_statistics(session: AsyncSession, shift_id: int):
         Order.is_cash_turned_in == True
     )
     collected_cash_res = await session.execute(query_collected_cash)
-    total_collected_cash_orders = collected_cash_res.scalar() or Decimal(0)
-    # Приводимо до Decimal, якщо база повернула float
-    total_collected_cash_orders = Decimal(str(total_collected_cash_orders))
+    collected_cash_scalar = collected_cash_res.scalar()
+    total_collected_cash_orders = collected_cash_scalar if collected_cash_scalar is not None else Decimal('0.00')
 
-    start_cash_decimal = shift.start_cash if shift.start_cash is not None else Decimal(0)
+    start_cash_decimal = shift.start_cash if shift.start_cash is not None else Decimal('0.00')
     
     theoretical_cash = start_cash_decimal + total_collected_cash_orders + service_in - service_out
 
@@ -230,7 +229,7 @@ async def get_shift_statistics(session: AsyncSession, shift_id: int):
         "theoretical_cash": theoretical_cash
     }
 
-async def close_active_shift(session: AsyncSession, shift_id: int, end_cash_actual: float):
+async def close_active_shift(session: AsyncSession, shift_id: int, end_cash_actual: Decimal):
     """Закриває зміну (Z-звіт)."""
     shift = await session.get(CashShift, shift_id)
     if not shift or shift.is_closed:
@@ -239,7 +238,7 @@ async def close_active_shift(session: AsyncSession, shift_id: int, end_cash_actu
     stats = await get_shift_statistics(session, shift_id)
     
     shift.end_time = datetime.now()
-    shift.end_cash_actual = Decimal(str(end_cash_actual))
+    shift.end_cash_actual = end_cash_actual
     
     shift.total_sales_cash = stats['total_sales_cash']
     shift.total_sales_card = stats['total_sales_card']
@@ -250,11 +249,11 @@ async def close_active_shift(session: AsyncSession, shift_id: int, end_cash_actu
     await session.commit()
     return shift
 
-async def add_shift_transaction(session: AsyncSession, shift_id: int, amount: float, t_type: str, comment: str):
+async def add_shift_transaction(session: AsyncSession, shift_id: int, amount: Decimal, t_type: str, comment: str):
     """Додає транзакцію."""
     tx = CashTransaction(
         shift_id=shift_id,
-        amount=Decimal(str(amount)),
+        amount=amount,
         transaction_type=t_type,
         comment=comment
     )

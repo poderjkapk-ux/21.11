@@ -2,7 +2,7 @@
 
 import html
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal  # <--- ЗМІНЕНО: Додано імпорт
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -213,7 +213,7 @@ async def handover_form(
     orders = orders_res.scalars().all()
     
     rows = ""
-    total_sum = Decimal(0)
+    total_sum = Decimal('0.00')
     for o in orders:
         total_sum += o.total_price
         rows += f"""
@@ -440,7 +440,7 @@ async def print_z_report(shift_id: int, session: AsyncSession = Depends(get_db_s
 @router.post("/admin/cash/open")
 async def web_open_shift(
     employee_id: int = Form(...),
-    start_cash: float = Form(...),
+    start_cash: Decimal = Form(...),  # <--- ЗМІНЕНО: Decimal
     session: AsyncSession = Depends(get_db_session),
     username: str = Depends(check_credentials)
 ):
@@ -455,7 +455,7 @@ async def web_open_shift(
 async def web_cash_transaction(
     shift_id: int = Form(...),
     transaction_type: str = Form(...),
-    amount: float = Form(...),
+    amount: Decimal = Form(...), # <--- ЗМІНЕНО: Decimal
     comment: str = Form(...),
     session: AsyncSession = Depends(get_db_session),
     username: str = Depends(check_credentials)
@@ -466,7 +466,7 @@ async def web_cash_transaction(
 @router.post("/admin/cash/close")
 async def web_close_shift(
     shift_id: int = Form(...),
-    end_cash_actual: float = Form(...),
+    end_cash_actual: Decimal = Form(...), # <--- ЗМІНЕНО: Decimal
     session: AsyncSession = Depends(get_db_session),
     username: str = Depends(check_credentials)
 ):

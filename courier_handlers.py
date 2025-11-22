@@ -16,6 +16,7 @@ from typing import Dict, Any, Optional, List
 from urllib.parse import quote_plus
 import re 
 import os
+from decimal import Decimal  # <--- ЗМІНЕНО: Додано імпорт
 
 from models import Employee, Order, OrderStatus, Settings, OrderStatusHistory, Table, Category, Product, OrderItem
 from notification_manager import notify_new_order_to_staff, notify_all_parties_on_status_change
@@ -795,16 +796,17 @@ def register_courier_handlers(dp_admin: Dispatcher):
             text += "<i>Кошик порожній</i>"
         else:
             for prod_id, item in cart.items():
+                # Ціна тут float, тому множимо як float для відображення
                 item_total = item['price'] * item['quantity']
                 total_price += item_total
-                text += f"- {html_module.escape(item['name'])} ({item['quantity']} шт.) = {item_total} грн\n"
+                text += f"- {html_module.escape(item['name'])} ({item['quantity']} шт.) = {item_total:.2f} грн\n"
                 kb.row(
                     InlineKeyboardButton(text="➖", callback_data=f"waiter_cart_qnt_{prod_id}_-1"),
                     InlineKeyboardButton(text=f"{item['quantity']}x {html_module.escape(item['name'])}", callback_data="noop"),
                     InlineKeyboardButton(text="➕", callback_data=f"waiter_cart_qnt_{prod_id}_1")
                 )
         
-        text += f"\n\n<b>Загальна сума: {total_price} грн</b>"
+        text += f"\n\n<b>Загальна сума: {total_price:.2f} грн</b>"
     
         kb.row(InlineKeyboardButton(text="➕ Додати страву", callback_data="waiter_cart_add_item"))
         if cart:
@@ -874,9 +876,10 @@ def register_courier_handlers(dp_admin: Dispatcher):
         if str(product_id) in cart: cart[str(product_id)]["quantity"] += 1
         else: 
             # Зберігаємо preparation_area для подальшого створення OrderItem
+            # Зберігаємо ціну як float для серіалізації в JSON (стан)
             cart[str(product_id)] = {
                 "name": product.name, 
-                "price": float(product.price), # Convert Decimal to float for JSON
+                "price": float(product.price), # Convert Decimal to float for JSON storage in FSM
                 "quantity": 1,
                 "area": product.preparation_area
             }
@@ -909,12 +912,31 @@ def register_courier_handlers(dp_admin: Dispatcher):
         
         employee = await session.scalar(select(Employee).where(Employee.telegram_user_id == callback.from_user.id))
         
-        total_price = sum(item['price'] * item['quantity'] for item in cart.values())
+        # Розрахунок суми з використанням Decimal
+        total_price = Decimal('0.00')
+        
+        # Створюємо тимчасовий список для OrderItems, щоб не ітерувати двічі
+        items_to_create = []
+
+        for prod_id, item in cart.items():
+            # Конвертуємо ціну з float назад у Decimal через рядок для точності
+            price_decimal = Decimal(str(item['price']))
+            qty = item['quantity']
+            
+            total_price += price_decimal * qty
+            
+            items_to_create.append({
+                "product_id": int(prod_id),
+                "name": item['name'],
+                "quantity": qty,
+                "price": price_decimal,
+                "area": item.get('area', 'kitchen')
+            })
         
         new_status = await session.scalar(select(OrderStatus).where(OrderStatus.name == "Новий").limit(1))
         status_id = new_status.id if new_status else 1
 
-        # Створюємо замовлення (без поля products)
+        # Створюємо замовлення
         order = Order(
             customer_name=f"Стіл: {table_name}", phone_number=f"table_{table_id}",
             total_price=total_price, is_delivery=False,
@@ -925,14 +947,14 @@ def register_courier_handlers(dp_admin: Dispatcher):
         await session.flush() # Отримуємо ID замовлення
 
         # Створюємо OrderItems
-        for prod_id, item in cart.items():
+        for item_data in items_to_create:
             order_item = OrderItem(
                 order_id=order.id,
-                product_id=int(prod_id),
-                product_name=item['name'],
-                quantity=item['quantity'],
-                price_at_moment=item['price'],
-                preparation_area=item.get('area', 'kitchen')
+                product_id=item_data["product_id"],
+                product_name=item_data["name"],
+                quantity=item_data["quantity"],
+                price_at_moment=item_data["price"], # Decimal
+                preparation_area=item_data["area"]
             )
             session.add(order_item)
 

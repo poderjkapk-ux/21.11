@@ -4,6 +4,7 @@ import html as html_module
 import json
 import logging
 import os
+from decimal import Decimal # <--- ДОДАНО
 from fastapi import APIRouter, Depends, HTTPException, Request, Body
 from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -50,7 +51,7 @@ async def get_in_house_menu(access_token: str, request: Request, session: AsyncS
 
     categories = [{"id": c.id, "name": c.name} for c in categories_res.scalars().all()]
     
-    # ВИПРАВЛЕНО: Конвертуємо Decimal у float для JSON, щоб уникнути помилок серіалізації
+    # Конвертуємо Decimal у float для JSON
     products = [{"id": p.id, "name": p.name, "description": p.description, "price": float(p.price), "image_url": p.image_url, "category_id": p.category_id} for p in products_res.scalars().all()]
 
     # Отримуємо історію неоплачених замовлень для цього столика
@@ -68,19 +69,19 @@ async def get_in_house_menu(access_token: str, request: Request, session: AsyncS
     active_orders = active_orders_res.scalars().all()
 
     history_list = []
-    grand_total = 0
+    grand_total = Decimal('0.00') # <--- ЗМІНЕНО
 
     for o in active_orders:
         grand_total += o.total_price
         status_name = o.status.name if o.status else "Обробяється"
         
-        # Генеруємо рядок продуктів з items (нова структура)
+        # Генеруємо рядок продуктів з items
         products_str = ", ".join([f"{item.product_name} x {item.quantity}" for item in o.items])
         
         history_list.append({
             "id": o.id,
             "products": products_str,
-            "total_price": float(o.total_price), # Decimal -> float
+            "total_price": float(o.total_price), # Decimal -> float для JSON
             "status": status_name,
             "time": o.created_at.strftime('%H:%M')
         })
@@ -114,7 +115,7 @@ async def get_in_house_menu(access_token: str, request: Request, session: AsyncS
         logo_html=logo_html,
         menu_data=menu_data,
         history_data=history_data,   
-        grand_total=float(grand_total),     
+        grand_total=float(grand_total), # Передаємо як float     
         site_title=html_module.escape(site_title),
         seo_description=html_module.escape(settings.seo_description or ""),
         seo_keywords=html_module.escape(settings.seo_keywords or ""),
@@ -156,7 +157,7 @@ async def get_table_updates(table_id: int, session: AsyncSession = Depends(get_d
     active_orders = active_orders_res.scalars().all()
 
     history_list = []
-    grand_total = 0
+    grand_total = Decimal('0.00') # <--- ЗМІНЕНО
 
     for o in active_orders:
         grand_total += o.total_price
@@ -166,7 +167,7 @@ async def get_table_updates(table_id: int, session: AsyncSession = Depends(get_d
         history_list.append({
             "id": o.id,
             "products": products_str,
-            "total_price": float(o.total_price),
+            "total_price": float(o.total_price), # Decimal -> float
             "status": status_name,
             "time": o.created_at.strftime('%H:%M')
         })
@@ -239,7 +240,7 @@ async def request_bill(
         select(Order).where(Order.table_id == table.id, Order.status_id.not_in(final_status_ids))
     )
     active_orders = active_orders_res.scalars().all()
-    total_bill = sum(o.total_price for o in active_orders)
+    total_bill = sum((o.total_price for o in active_orders), start=Decimal('0.00')) # <--- ЗМІНЕНО
 
     waiters = table.assigned_waiters
     method_text = "💳 Картка" if method == 'card' else "💵 Готівка"
@@ -298,7 +299,7 @@ async def place_in_house_order(
     products_res = await session.execute(select(Product).where(Product.id.in_(product_ids)))
     db_products = {str(p.id): p for p in products_res.scalars().all()}
 
-    total_price = 0
+    total_price = Decimal('0.00') # <--- ЗМІНЕНО
     new_order_items = []
     products_str_for_msg = []
 
@@ -307,7 +308,7 @@ async def place_in_house_order(
         qty = int(item.get('quantity', 1))
         if pid in db_products and qty > 0:
             product = db_products[pid]
-            total_price += product.price * qty
+            total_price += product.price * qty # product.price is Decimal
             
             products_str_for_msg.append(f"{product.name} x {qty}")
             
@@ -315,7 +316,7 @@ async def place_in_house_order(
                 product_id=product.id,
                 product_name=product.name,
                 quantity=qty,
-                price_at_moment=product.price,
+                price_at_moment=product.price, # Decimal
                 preparation_area=product.preparation_area
             ))
 
@@ -328,7 +329,8 @@ async def place_in_house_order(
 
     order = Order(
         customer_name=f"Стіл: {table.name}", phone_number=f"table_{table.id}",
-        address=None, total_price=total_price,
+        address=None, 
+        total_price=total_price, # Decimal
         is_delivery=False, delivery_time="In House", order_type="in_house",
         table_id=table.id, status_id=new_status.id,
         items=new_order_items
