@@ -844,31 +844,34 @@ ADMIN_ROLES_BODY = """
 """
 ADMIN_REPORTS_BODY = """
 <div class="card">
-    <h2>Фільтр звіту</h2>
-    <form action="/admin/reports/couriers" method="get" class="search-form">
-        <label for="date_from">Дата з:</label>
-        <input type="date" id="date_from" name="date_from" value="{date_from}">
-        <label for="date_to">Дата по:</label>
-        <input type="date" id="date_to" name="date_to" value="{date_to}">
-        <button type="submit">Сформувати звіт</button>
-    </form>
-</div>
-<div class="card">
-    <h2>Результати звіту за період з {date_from_formatted} по {date_to_formatted}</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>Ім'я кур'єра</th>
-                <th>Кількість виконаних замовлень</th>
-            </tr>
-        </thead>
-        <tbody>
-            {report_rows}
-        </tbody>
-    </table>
+    <h2>📊 Выбор отчета</h2>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 20px;">
+        <a href="/admin/reports/cash_flow" class="report-link-card" style="display:block; padding:20px; background: #e3f2fd; border-radius:8px; text-decoration:none; color:#333; border:1px solid #90caf9;">
+            <i class="fa-solid fa-money-bill-trend-up" style="font-size: 2em; color: #1976d2; margin-bottom:10px;"></i>
+            <h3 style="margin:0;">Движение средств</h3>
+            <p style="color:#666; font-size:0.9em;">Выручка, расходы, наличные и безнал.</p>
+        </a>
+        
+        <a href="/admin/reports/workers" class="report-link-card" style="display:block; padding:20px; background: #fff3e0; border-radius:8px; text-decoration:none; color:#333; border:1px solid #ffcc80;">
+            <i class="fa-solid fa-users-gear" style="font-size: 2em; color: #f57c00; margin-bottom:10px;"></i>
+            <h3 style="margin:0;">Эффективность персонала</h3>
+            <p style="color:#666; font-size:0.9em;">KPI сотрудников, количество заказов, продажи.</p>
+        </a>
+
+        <a href="/admin/reports/analytics" class="report-link-card" style="display:block; padding:20px; background: #e8f5e9; border-radius:8px; text-decoration:none; color:#333; border:1px solid #a5d6a7;">
+            <i class="fa-solid fa-chart-column" style="font-size: 2em; color: #388e3c; margin-bottom:10px;"></i>
+            <h3 style="margin:0;">Аналитика продаж</h3>
+            <p style="color:#666; font-size:0.9em;">Топ блюд, категории.</p>
+        </a>
+        
+        <a href="/admin/reports/couriers" class="report-link-card" style="display:block; padding:20px; background: #f3e5f5; border-radius:8px; text-decoration:none; color:#333; border:1px solid #ce93d8;">
+            <i class="fa-solid fa-truck-fast" style="font-size: 2em; color: #8e24aa; margin-bottom:10px;"></i>
+            <h3 style="margin:0;">Отчет по курьерам</h3>
+            <p style="color:#666; font-size:0.9em;">Старый отчет по доставкам.</p>
+        </a>
+    </div>
 </div>
 """
-
 ADMIN_SETTINGS_BODY = """
 <div class="card">
     <form action="/admin/settings" method="post" enctype="multipart/form-data">
@@ -3226,5 +3229,105 @@ ADMIN_DESIGN_SETTINGS_BODY = """
             <button type="submit">Зберегти налаштування</button>
         </div>
     </form>
+</div>
+"""
+ADMIN_REPORT_CASH_FLOW_BODY = """
+<div class="card">
+    <h2>💰 Отчет о движении денежных средств</h2>
+    <form action="/admin/reports/cash_flow" method="get" class="search-form" style="background: #f9f9f9; padding: 15px; border-radius: 8px;">
+        <label>Период:</label>
+        <input type="date" name="date_from" value="{date_from}" required>
+        <span>—</span>
+        <input type="date" name="date_to" value="{date_to}" required>
+        <button type="submit">Показать</button>
+    </form>
+</div>
+
+<div class="card">
+    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 20px;">
+        <div style="background:#e8f5e9; padding:15px; border-radius:5px;">
+            <small>Общая выручка</small>
+            <div style="font-size:1.4em; font-weight:bold; color:#2e7d32;">{total_revenue} грн</div>
+        </div>
+        <div style="background:#fff3e0; padding:15px; border-radius:5px;">
+            <small>Наличные</small>
+            <div style="font-size:1.4em; font-weight:bold; color:#ef6c00;">{cash_revenue} грн</div>
+        </div>
+        <div style="background:#e3f2fd; padding:15px; border-radius:5px;">
+            <small>Карта / Терминал</small>
+            <div style="font-size:1.4em; font-weight:bold; color:#1565c0;">{card_revenue} грн</div>
+        </div>
+        <div style="background:#ffebee; padding:15px; border-radius:5px;">
+            <small>Расходы (Изъятия)</small>
+            <div style="font-size:1.4em; font-weight:bold; color:#c62828;">{total_expenses} грн</div>
+        </div>
+    </div>
+
+    <h3>Детализация транзакций (Служебные)</h3>
+    <table>
+        <thead><tr><th>Дата</th><th>Тип</th><th>Сумма</th><th>Кассир</th><th>Комментарий</th></tr></thead>
+        <tbody>{transaction_rows}</tbody>
+    </table>
+</div>
+"""
+
+ADMIN_REPORT_WORKERS_BODY = """
+<div class="card">
+    <h2>👥 Отчет по сотрудникам</h2>
+    <form action="/admin/reports/workers" method="get" class="search-form" style="background: #f9f9f9; padding: 15px; border-radius: 8px;">
+        <label>Период:</label>
+        <input type="date" name="date_from" value="{date_from}" required>
+        <span>—</span>
+        <input type="date" name="date_to" value="{date_to}" required>
+        <button type="submit">Показать</button>
+    </form>
+</div>
+
+<div class="card">
+    <table>
+        <thead>
+            <tr>
+                <th>Сотрудник</th>
+                <th>Роль</th>
+                <th>Кол-во заказов</th>
+                <th>Общая сумма продаж</th>
+                <th>Средний чек</th>
+            </tr>
+        </thead>
+        <tbody>
+            {rows}
+        </tbody>
+    </table>
+</div>
+"""
+
+ADMIN_REPORT_ANALYTICS_BODY = """
+<div class="card">
+    <h2>📈 Аналитика продаж (Топ блюд)</h2>
+    <form action="/admin/reports/analytics" method="get" class="search-form" style="background: #f9f9f9; padding: 15px; border-radius: 8px;">
+        <label>Период:</label>
+        <input type="date" name="date_from" value="{date_from}" required>
+        <span>—</span>
+        <input type="date" name="date_to" value="{date_to}" required>
+        <button type="submit">Показать</button>
+    </form>
+</div>
+
+<div class="card">
+    <h3>Топ популярных позиций</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>№</th>
+                <th>Название блюда</th>
+                <th>Продано (шт)</th>
+                <th>Выручка (грн)</th>
+                <th>Доля выручки</th>
+            </tr>
+        </thead>
+        <tbody>
+            {rows}
+        </tbody>
+    </table>
 </div>
 """

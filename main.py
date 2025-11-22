@@ -60,6 +60,7 @@ from admin_tables import router as admin_tables_router
 from in_house_menu import router as in_house_menu_router
 from admin_design_settings import router as admin_design_router
 from admin_cash import router as admin_cash_router
+from admin_reports import router as admin_reports_router
 # -----------------------------------------------
 
 # --- КОНФІГУРАЦІЯ ---
@@ -749,6 +750,7 @@ app.include_router(admin_order_router)
 app.include_router(admin_tables_router)
 app.include_router(admin_design_router)
 app.include_router(admin_cash_router)
+app.include_router(admin_reports_router)
 
 class DbSessionMiddleware:
     def __init__(self, session_pool): self.session_pool = session_pool
