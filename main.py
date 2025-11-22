@@ -852,7 +852,13 @@ async def place_web_order(order_data: dict = Body(...), session: AsyncSession = 
     if not items:
         raise HTTPException(status_code=400, detail="Кошик порожній")
 
-    product_ids = [item['id'] for item in items]
+    # --- FIX: Explicitly convert IDs to integers ---
+    try:
+        product_ids = [int(item['id']) for item in items]
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Невірний формат ID товару (має бути число).")
+    # -----------------------------------------------
+
     products_res = await session.execute(sa.select(Product).where(Product.id.in_(product_ids)))
     db_products = {str(p.id): p for p in products_res.scalars().all()}
 
