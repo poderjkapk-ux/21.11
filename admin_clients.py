@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Query, HTTPException
 from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 
 from models import Order, OrderStatusHistory, Employee, Settings
 from templates import ADMIN_HTML_TEMPLATE, ADMIN_CLIENTS_LIST_BODY, ADMIN_CLIENT_DETAIL_BODY
@@ -125,7 +125,8 @@ async def admin_client_detail(
         .options(
             joinedload(Order.status),
             joinedload(Order.completed_by_courier),
-            joinedload(Order.history).joinedload(OrderStatusHistory.status)
+            joinedload(Order.history).joinedload(OrderStatusHistory.status),
+            selectinload(Order.items)  # Завантажуємо товари для products_text
         )
         .order_by(Order.id.desc())
     )
@@ -156,6 +157,9 @@ async def admin_client_detail(
         
         status_name = o.status.name if o.status else "Невідомий"
 
+        # Використовуємо o.products_text замість o.products
+        products_display = o.products_text
+
         order_rows.append(f"""
         <tr class="order-summary-row" onclick="toggleDetails(this)">
             <td>#{o.id}</td>
@@ -169,7 +173,7 @@ async def admin_client_detail(
             <td colspan="6">
                 <div class="details-content">
                     <h4>Деталі Замовлення:</h4>
-                    <p><b>Склад:</b> {html.escape(o.products)}</p>
+                    <p><b>Склад:</b> {html.escape(products_display)}</p>
                     <p><b>Адреса:</b> {html.escape(o.address or 'Самовивіз')}</p>
                     <h4>Історія Статусів:</h4>
                     {history_log}
