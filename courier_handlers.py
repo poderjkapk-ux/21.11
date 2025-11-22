@@ -11,18 +11,16 @@ from aiogram.filters import CommandStart
 from aiogram.exceptions import TelegramBadRequest
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 from typing import Dict, Any, Optional, List
 from urllib.parse import quote_plus
 import re 
 import os
 
-from models import Employee, Order, OrderStatus, Settings, OrderStatusHistory, Table, Category, Product
+from models import Employee, Order, OrderStatus, Settings, OrderStatusHistory, Table, Category, Product, OrderItem
 from notification_manager import notify_new_order_to_staff, notify_all_parties_on_status_change
 # --- КАСА: Імпорт сервісів ---
 from cash_service import link_order_to_shift, register_employee_debt
-# --- UTILS: Импорт общей функции парсинга ---
-from utils import parse_products_str
 
 logger = logging.getLogger(__name__)
 
@@ -78,36 +76,27 @@ def get_waiter_keyboard(employee: Employee): return get_staff_keyboard(employee)
 async def _get_filtered_order_text(session: AsyncSession, order: Order, area: str) -> str:
     """
     Повертає текст складу замовлення, залишаючи ТІЛЬКИ товари для вказаного цеху.
+    Використовує OrderItem.
     """
-    if not order.products:
+    # Завантажуємо items якщо вони ще не завантажені
+    if 'items' not in order.__dict__:
+        await session.refresh(order, ['items'])
+        
+    if not order.items:
         return ""
-
-    items_map = parse_products_str(order.products)
-    if not items_map:
-        return ""
-
-    names = list(items_map.keys())
-    products_res = await session.execute(select(Product))
-    all_products = products_res.scalars().all()
-    
-    db_products = {p.name.strip(): p for p in all_products}
 
     filtered_lines = []
-    for name, qty in items_map.items():
-        product = db_products.get(name)
-        
+    for item in order.items:
+        # Перевіряємо цех
         is_target = False
-        if product:
-            if area == 'bar' and product.preparation_area == 'bar':
-                is_target = True
-            elif area == 'kitchen' and product.preparation_area != 'bar':
-                is_target = True
-        else:
-            if area == 'kitchen':
-                is_target = True
+        if area == 'bar' and item.preparation_area == 'bar':
+            is_target = True
+        elif area == 'kitchen' and item.preparation_area != 'bar':
+            # Все, що не бар, йде на кухню (за замовчуванням)
+            is_target = True
 
         if is_target:
-            filtered_lines.append(f"- {html_module.escape(name)} x {qty}")
+            filtered_lines.append(f"- {html_module.escape(item.product_name)} x {item.quantity}")
 
     if not filtered_lines:
         return ""
@@ -130,10 +119,12 @@ async def show_chef_orders(message_or_callback: Message | CallbackQuery, session
     kitchen_statuses_res = await session.execute(select(OrderStatus.id).where(OrderStatus.visible_to_chef == True))
     kitchen_status_ids = kitchen_statuses_res.scalars().all()
 
+    # Завантажуємо items для фільтрації
     orders_res = await session.execute(
-        select(Order).options(joinedload(Order.status), joinedload(Order.table)).where(
-            Order.status_id.in_(kitchen_status_ids)
-        ).order_by(Order.id.asc())
+        select(Order)
+        .options(joinedload(Order.status), joinedload(Order.table), selectinload(Order.items))
+        .where(Order.status_id.in_(kitchen_status_ids))
+        .order_by(Order.id.asc())
     )
     all_orders = orders_res.scalars().all()
 
@@ -142,6 +133,10 @@ async def show_chef_orders(message_or_callback: Message | CallbackQuery, session
     
     kb = InlineKeyboardBuilder()
     for order in all_orders:
+        # Якщо кухня вже виконала свою частину, не показуємо
+        if order.kitchen_done:
+            continue
+
         products_text = await _get_filtered_order_text(session, order, 'kitchen')
         if not products_text:
             continue
@@ -186,9 +181,10 @@ async def show_bartender_orders(message_or_callback: Message | CallbackQuery, se
     bar_status_ids = bar_statuses_res.scalars().all()
 
     orders_res = await session.execute(
-        select(Order).options(joinedload(Order.status), joinedload(Order.table)).where(
-            Order.status_id.in_(bar_status_ids)
-        ).order_by(Order.id.asc())
+        select(Order)
+        .options(joinedload(Order.status), joinedload(Order.table), selectinload(Order.items))
+        .where(Order.status_id.in_(bar_status_ids))
+        .order_by(Order.id.asc())
     )
     all_orders = orders_res.scalars().all()
 
@@ -197,6 +193,10 @@ async def show_bartender_orders(message_or_callback: Message | CallbackQuery, se
     
     kb = InlineKeyboardBuilder()
     for order in all_orders:
+        # Якщо бар вже виконав свою частину
+        if order.bar_done:
+            continue
+
         products_text = await _get_filtered_order_text(session, order, 'bar')
         if not products_text:
             continue
@@ -327,9 +327,14 @@ async def start_handler(message: Message, state: FSMContext, session: AsyncSessi
                              reply_markup=get_staff_login_keyboard())
 
 async def _generate_waiter_order_view(order: Order, session: AsyncSession):
-    await session.refresh(order, ['status', 'accepted_by_waiter', 'table'])
+    await session.refresh(order, ['status', 'accepted_by_waiter', 'table', 'items'])
     status_name = order.status.name if order.status else 'Невідомий'
-    products_formatted = "- " + html_module.escape(order.products or '').replace(", ", "\n- ")
+    
+    products_formatted = ""
+    if order.items:
+        products_formatted = "\n".join([f"- {html_module.escape(item.product_name)} x {item.quantity}" for item in order.items])
+    else:
+        products_formatted = "- <i>(Пусто)</i>"
     
     if order.accepted_by_waiter:
         accepted_by_text = f"<b>Прийнято:</b> {html_module.escape(order.accepted_by_waiter.full_name)}\n\n"
@@ -486,7 +491,7 @@ def register_courier_handlers(dp_admin: Dispatcher):
     @dp_admin.callback_query(F.data.startswith("courier_view_order_"))
     async def courier_view_order_details(callback: CallbackQuery, session: AsyncSession, **kwargs: Dict[str, Any]):
         order_id = int(callback.data.split("_")[3])
-        order = await session.get(Order, order_id)
+        order = await session.get(Order, order_id, options=[selectinload(Order.items), joinedload(Order.status)])
         if not order: return await callback.answer("Замовлення не знайдено.")
 
         status_name = order.status.name if order.status else 'Невідомий'
@@ -496,12 +501,14 @@ def register_courier_handlers(dp_admin: Dispatcher):
         if order.status.is_completed_status:
             pay_info = f"\n<b>Оплата:</b> {'💳 Картка' if order.payment_method == 'card' else '💵 Готівка'}"
             
+        products_text = ", ".join([f"{i.product_name} x {i.quantity}" for i in order.items])
+
         text = (f"<b>Деталі замовлення #{order.id}</b>\n\n"
                 f"Статус: {status_name}\n"
                 f"Адреса: {html_module.escape(address_info)}\n"
-                f"Клієнт: {html_module.escape(order.customer_name)}\n"
-                f"Телефон: {html_module.escape(order.phone_number)}\n" 
-                f"Склад: {html_module.escape(order.products)}\n"
+                f"Клієнт: {html_module.escape(order.customer_name or '')}\n"
+                f"Телефон: {html_module.escape(order.phone_number or '')}\n" 
+                f"Склад: {html_module.escape(products_text)}\n"
                 f"Сума: {order.total_price} грн{pay_info}\n\n")
         
         kb = InlineKeyboardBuilder()
@@ -532,37 +539,68 @@ def register_courier_handlers(dp_admin: Dispatcher):
         order_id = int(parts[2])
         area = parts[3] if len(parts) > 3 else 'kitchen'
         
-        order = await session.get(Order, order_id, options=[joinedload(Order.status), joinedload(Order.table), joinedload(Order.accepted_by_waiter)])
+        # Завантажуємо items для перевірки
+        order = await session.get(Order, order_id, options=[
+            joinedload(Order.status), 
+            joinedload(Order.table), 
+            joinedload(Order.accepted_by_waiter),
+            selectinload(Order.items)
+        ])
         if not order: return await callback.answer("Замовлення не знайдено.")
 
         ready_status = await session.scalar(select(OrderStatus).where(OrderStatus.name == "Готовий до видачі").limit(1))
         if not ready_status: return await callback.answer("Статус 'Готовий до видачі' не налаштовано.", show_alert=True)
         
+        # Встановлюємо флаги готовності цехів
+        if area == 'kitchen':
+            order.kitchen_done = True
+        elif area == 'bar':
+            order.bar_done = True
+            
+        # Перевіряємо, чи все замовлення готове
+        has_kitchen_items = any(item.preparation_area != 'bar' for item in order.items)
+        has_bar_items = any(item.preparation_area == 'bar' for item in order.items)
+        
+        is_fully_ready = True
+        if has_kitchen_items and not order.kitchen_done:
+            is_fully_ready = False
+        if has_bar_items and not order.bar_done:
+            is_fully_ready = False
+            
         old_status_name = order.status.name
         actor_info = f"{employee.role.name if employee else 'Кухня/Бар'}: {employee.full_name if employee else 'Невідомий'}"
         
         if area == 'bar': actor_info += " (Бар)"
         else: actor_info += " (Кухня)"
         
-        if order.status_id != ready_status.id:
+        # Змінюємо статус тільки якщо все готово
+        if is_fully_ready and order.status_id != ready_status.id:
             order.status_id = ready_status.id
             session.add(OrderStatusHistory(order_id=order.id, status_id=ready_status.id, actor_info=actor_info))
-            await session.commit()
         
-        await notify_all_parties_on_status_change(
-            order=order, 
-            old_status_name=old_status_name,
-            actor_info=actor_info,
-            admin_bot=callback.bot,
-            client_bot=client_bot,
-            session=session
-        )
+        await session.commit()
+        
+        # Сповіщення надсилаємо в будь-якому випадку (щоб офіціант знав, що частина готова, якщо ми це реалізуємо)
+        # Але в поточному notification_manager повідомлення про "Готово до видачі" йде тільки при зміні статусу.
+        # Тому якщо статус не змінився (чекаємо інший цех), сповіщення не піде.
+        # Можна додати проміжне сповіщення тут, якщо хочете.
+        
+        if is_fully_ready:
+            await notify_all_parties_on_status_change(
+                order=order, 
+                old_status_name=old_status_name,
+                actor_info=actor_info,
+                admin_bot=callback.bot,
+                client_bot=client_bot,
+                session=session
+            )
 
         products_formatted = await _get_filtered_order_text(session, order, area)
-        if not products_formatted:
-             products_formatted = html_module.escape(order.products or '').replace(", ", "\n")
-
-        done_text = f"✅ <b>ВИДАНО ({actor_info}): Замовлення #{order.id}</b>\nСклад:\n{products_formatted}"
+        
+        done_text = f"✅ <b>ВИДАНО ({actor_info}): Замовлення #{order.id}</b>\n"
+        if not is_fully_ready:
+             done_text += "<i>(Чекаємо інший цех для повного завершення)</i>\n"
+        done_text += f"Склад:\n{products_formatted}"
         
         try: await callback.message.edit_text(done_text, reply_markup=None)
         except TelegramBadRequest: pass
@@ -741,7 +779,7 @@ def register_courier_handlers(dp_admin: Dispatcher):
         await callback.answer(f"Замовлення #{order.id} прийнято!")
         await manage_in_house_order_handler(callback, session, order_id=order.id)
 
-    # --- FSM СТВОРЕННЯ ЗАМОВЛЕННЯ ---
+    # --- FSM СТВОРЕННЯ ЗАМОВЛЕННЯ (ОФІЦІАНТ) ---
 
     async def _display_waiter_cart(callback: CallbackQuery, state: FSMContext, session: AsyncSession):
         data = await state.get_data()
@@ -834,7 +872,14 @@ def register_courier_handlers(dp_admin: Dispatcher):
         cart = data.get("cart", {})
         
         if str(product_id) in cart: cart[str(product_id)]["quantity"] += 1
-        else: cart[str(product_id)] = {"name": product.name, "price": product.price, "quantity": 1}
+        else: 
+            # Зберігаємо preparation_area для подальшого створення OrderItem
+            cart[str(product_id)] = {
+                "name": product.name, 
+                "price": float(product.price), # Convert Decimal to float for JSON
+                "quantity": 1,
+                "area": product.preparation_area
+            }
         
         await state.update_data(cart=cart)
         await state.set_state(WaiterCreateOrderStates.managing_cart)
@@ -865,18 +910,32 @@ def register_courier_handlers(dp_admin: Dispatcher):
         employee = await session.scalar(select(Employee).where(Employee.telegram_user_id == callback.from_user.id))
         
         total_price = sum(item['price'] * item['quantity'] for item in cart.values())
-        products_str = ", ".join([f"{item['name']} x {item['quantity']}" for item in cart.values()])
-
+        
         new_status = await session.scalar(select(OrderStatus).where(OrderStatus.name == "Новий").limit(1))
         status_id = new_status.id if new_status else 1
 
+        # Створюємо замовлення (без поля products)
         order = Order(
             customer_name=f"Стіл: {table_name}", phone_number=f"table_{table_id}",
-            products=products_str, total_price=total_price, is_delivery=False,
+            total_price=total_price, is_delivery=False,
             delivery_time="In House", order_type="in_house", table_id=table_id,
             status_id=status_id, accepted_by_waiter_id=employee.id
         )
         session.add(order)
+        await session.flush() # Отримуємо ID замовлення
+
+        # Створюємо OrderItems
+        for prod_id, item in cart.items():
+            order_item = OrderItem(
+                order_id=order.id,
+                product_id=int(prod_id),
+                product_name=item['name'],
+                quantity=item['quantity'],
+                price_at_moment=item['price'],
+                preparation_area=item.get('area', 'kitchen')
+            )
+            session.add(order_item)
+
         await session.commit()
         
         await session.refresh(order, ['status'])
@@ -886,7 +945,6 @@ def register_courier_handlers(dp_admin: Dispatcher):
         
         await callback.answer(f"Замовлення #{order.id} створено!")
         
-        # Тут використовується збережений у dp екземпляр бота
         admin_bot = dp_admin.get("bot_instance")
         if admin_bot:
             await notify_new_order_to_staff(admin_bot, order, session)

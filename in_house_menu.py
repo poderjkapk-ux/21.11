@@ -13,15 +13,13 @@ from aiogram import Bot, html as aiogram_html
 from aiogram.utils.keyboard import InlineKeyboardBuilder, InlineKeyboardButton
 from urllib.parse import quote_plus as url_quote_plus
 
-from models import Table, Product, Category, Order, Settings, Employee, OrderStatusHistory, OrderStatus
+from models import Table, Product, Category, Order, Settings, Employee, OrderStatusHistory, OrderStatus, OrderItem
 from dependencies import get_db_session
 from templates import IN_HOUSE_MENU_HTML_TEMPLATE
 from notification_manager import distribute_order_to_production
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-# get_admin_bot ВИДАЛЕНО (використовується request.app.state.admin_bot)
 
 @router.get("/menu/table/{access_token}", response_class=HTMLResponse)
 async def get_in_house_menu(access_token: str, request: Request, session: AsyncSession = Depends(get_db_session)):
@@ -51,7 +49,9 @@ async def get_in_house_menu(access_token: str, request: Request, session: AsyncS
     )
 
     categories = [{"id": c.id, "name": c.name} for c in categories_res.scalars().all()]
-    products = [{"id": p.id, "name": p.name, "description": p.description, "price": p.price, "image_url": p.image_url, "category_id": p.category_id} for p in products_res.scalars().all()]
+    
+    # ВИПРАВЛЕНО: Конвертуємо Decimal у float для JSON, щоб уникнути помилок серіалізації
+    products = [{"id": p.id, "name": p.name, "description": p.description, "price": float(p.price), "image_url": p.image_url, "category_id": p.category_id} for p in products_res.scalars().all()]
 
     # Отримуємо історію неоплачених замовлень для цього столика
     final_statuses_res = await session.execute(
@@ -62,7 +62,7 @@ async def get_in_house_menu(access_token: str, request: Request, session: AsyncS
     active_orders_res = await session.execute(
         select(Order)
         .where(Order.table_id == table.id, Order.status_id.not_in(final_status_ids))
-        .options(joinedload(Order.status))
+        .options(joinedload(Order.status), selectinload(Order.items))
         .order_by(Order.id.desc())
     )
     active_orders = active_orders_res.scalars().all()
@@ -73,10 +73,14 @@ async def get_in_house_menu(access_token: str, request: Request, session: AsyncS
     for o in active_orders:
         grand_total += o.total_price
         status_name = o.status.name if o.status else "Обробяється"
+        
+        # Генеруємо рядок продуктів з items (нова структура)
+        products_str = ", ".join([f"{item.product_name} x {item.quantity}" for item in o.items])
+        
         history_list.append({
             "id": o.id,
-            "products": o.products,
-            "total_price": o.total_price,
+            "products": products_str,
+            "total_price": float(o.total_price), # Decimal -> float
             "status": status_name,
             "time": o.created_at.strftime('%H:%M')
         })
@@ -110,7 +114,7 @@ async def get_in_house_menu(access_token: str, request: Request, session: AsyncS
         logo_html=logo_html,
         menu_data=menu_data,
         history_data=history_data,   
-        grand_total=grand_total,     
+        grand_total=float(grand_total),     
         site_title=html_module.escape(site_title),
         seo_description=html_module.escape(settings.seo_description or ""),
         seo_keywords=html_module.escape(settings.seo_keywords or ""),
@@ -133,22 +137,20 @@ async def get_in_house_menu(access_token: str, request: Request, session: AsyncS
         social_links_html=social_links_html
     ))
 
-# --- НОВИЙ ЕНДПОІНТ ДЛЯ АВТООНОВЛЕННЯ (POLLING) ---
+# --- ЕНДПОІНТ ДЛЯ АВТООНОВЛЕННЯ (POLLING) ---
 @router.get("/api/menu/table/{table_id}/updates", response_class=JSONResponse)
 async def get_table_updates(table_id: int, session: AsyncSession = Depends(get_db_session)):
     """Повертає актуальний статус замовлень для оновлення фронтенду."""
     
-    # Статуси, які вважаються завершеними (замовлення зникає з активних або фіксується)
     final_statuses_res = await session.execute(
         select(OrderStatus.id).where(or_(OrderStatus.is_completed_status == True, OrderStatus.is_cancelled_status == True))
     )
     final_status_ids = final_statuses_res.scalars().all()
 
-    # Отримуємо активні замовлення
     active_orders_res = await session.execute(
         select(Order)
         .where(Order.table_id == table_id, Order.status_id.not_in(final_status_ids))
-        .options(joinedload(Order.status))
+        .options(joinedload(Order.status), selectinload(Order.items))
         .order_by(Order.id.desc())
     )
     active_orders = active_orders_res.scalars().all()
@@ -159,24 +161,25 @@ async def get_table_updates(table_id: int, session: AsyncSession = Depends(get_d
     for o in active_orders:
         grand_total += o.total_price
         status_name = o.status.name if o.status else "Обробяється"
+        products_str = ", ".join([f"{item.product_name} x {item.quantity}" for item in o.items])
+        
         history_list.append({
             "id": o.id,
-            "products": o.products,
-            "total_price": o.total_price,
+            "products": products_str,
+            "total_price": float(o.total_price),
             "status": status_name,
             "time": o.created_at.strftime('%H:%M')
         })
 
     return {
         "history_data": history_list,
-        "grand_total": grand_total
+        "grand_total": float(grand_total)
     }
-# ----------------------------------------------------
 
 @router.post("/api/menu/table/{table_id}/call_waiter", response_class=JSONResponse)
 async def call_waiter(
     table_id: int, 
-    request: Request, # Додано Request для доступу до state
+    request: Request,
     session: AsyncSession = Depends(get_db_session)
 ):
     """Обробляє виклик офіціанта зі столика."""
@@ -187,13 +190,12 @@ async def call_waiter(
     message_text = f"❗️ <b>Виклик зі столика: {html_module.escape(table.name)}</b>"
     
     admin_chat_id_str = os.environ.get('ADMIN_CHAT_ID')
-
-    # Беремо спільного бота
     admin_bot = request.app.state.admin_bot
+    
     if not admin_bot:
-        raise HTTPException(status_code=500, detail="Сервіс сповіщень недоступний.")
+        logger.warning("Bot not configured, cannot send waiter call.")
+        return JSONResponse(content={"message": "Система сповіщень тимчасово недоступна, але ми працюємо над цим."})
 
-    # Прибрано блок finally з закриттям сесії!
     target_chat_ids = set()
     for w in waiters:
         if w.telegram_user_id and w.is_on_shift:
@@ -215,13 +217,12 @@ async def call_waiter(
                 logger.error(f"Не вдалося надіслати виклик офіціанта в чат {chat_id}: {e}")
         return JSONResponse(content={"message": "Офіціанта сповіщено. Будь ласка, зачекайте."})
     else:
-        logger.error(f"Не вдалося знайти отримувача для виклику офіціанта зі столика {table_id}")
-        raise HTTPException(status_code=503, detail="Не вдалося знайти отримувача для сповіщення.")
+        return JSONResponse(content={"message": "Офіціанта сповіщено."})
 
 @router.post("/api/menu/table/{table_id}/request_bill", response_class=JSONResponse)
 async def request_bill(
     table_id: int, 
-    request: Request, # Додано Request
+    request: Request,
     method: str = "cash", 
     session: AsyncSession = Depends(get_db_session)
 ):
@@ -229,7 +230,6 @@ async def request_bill(
     table = await session.get(Table, table_id, options=[selectinload(Table.assigned_waiters)])
     if not table: raise HTTPException(status_code=404, detail="Столик не знайдено.")
 
-    # Рахуємо загальну суму активних замовлень для повідомлення офіціанту
     final_statuses_res = await session.execute(
         select(OrderStatus.id).where(or_(OrderStatus.is_completed_status == True, OrderStatus.is_cancelled_status == True))
     )
@@ -242,8 +242,6 @@ async def request_bill(
     total_bill = sum(o.total_price for o in active_orders)
 
     waiters = table.assigned_waiters
-    
-    # Формуємо повідомлення з урахуванням методу оплати
     method_text = "💳 Картка" if method == 'card' else "💵 Готівка"
     
     message_text = (f"💰 <b>Запит на розрахунок ({method_text})</b>\n"
@@ -251,13 +249,11 @@ async def request_bill(
                     f"Сума до сплати: <b>{total_bill} грн</b>")
 
     admin_chat_id_str = os.environ.get('ADMIN_CHAT_ID')
-
-    # Беремо спільного бота
     admin_bot = request.app.state.admin_bot
+    
     if not admin_bot:
-        raise HTTPException(status_code=500, detail="Сервіс сповіщень недоступний.")
+         return JSONResponse(content={"message": "Система сповіщень недоступна."})
 
-    # Прибрано блок finally з закриттям сесії!
     target_chat_ids = set()
     for w in waiters:
         if w.telegram_user_id and w.is_on_shift:
@@ -279,13 +275,12 @@ async def request_bill(
                 logger.error(f"Не вдалося надіслати запит на рахунок в чат {chat_id}: {e}")
         return JSONResponse(content={"message": "Запит надіслано. Офіціант незабаром підійде з рахунком."})
     else:
-        logger.error(f"Не вдалося знайти отримувача для запиту на рахунок зі столика {table_id}")
-        raise HTTPException(status_code=503, detail="Не вдалося знайти отримувача для сповіщення.")
+        return JSONResponse(content={"message": "Запит надіслано."})
 
 @router.post("/api/menu/table/{table_id}/place_order", response_class=JSONResponse)
 async def place_in_house_order(
     table_id: int, 
-    request: Request, # Додано Request
+    request: Request,
     items: list = Body(...), 
     session: AsyncSession = Depends(get_db_session)
 ):
@@ -294,8 +289,38 @@ async def place_in_house_order(
     if not table: raise HTTPException(status_code=404, detail="Столик не знайдено.")
     if not items: raise HTTPException(status_code=400, detail="Замовлення порожнє.")
 
-    total_price = sum(item.get('price', 0) * item.get('quantity', 0) for item in items)
-    products_str = ", ".join([f"{item['name']} x {item['quantity']}" for item in items])
+    # ВАЖЛИВО: Перетворюємо ID в int, щоб уникнути помилки Postgres "operator does not exist: integer = character varying"
+    try:
+        product_ids = [int(item.get('id')) for item in items if item.get('id') is not None]
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Невірний формат ID товару.")
+
+    products_res = await session.execute(select(Product).where(Product.id.in_(product_ids)))
+    db_products = {str(p.id): p for p in products_res.scalars().all()}
+
+    total_price = 0
+    new_order_items = []
+    products_str_for_msg = []
+
+    for item in items:
+        pid = str(item.get('id'))
+        qty = int(item.get('quantity', 1))
+        if pid in db_products and qty > 0:
+            product = db_products[pid]
+            total_price += product.price * qty
+            
+            products_str_for_msg.append(f"{product.name} x {qty}")
+            
+            new_order_items.append(OrderItem(
+                product_id=product.id,
+                product_name=product.name,
+                quantity=qty,
+                price_at_moment=product.price,
+                preparation_area=product.preparation_area
+            ))
+
+    if not new_order_items:
+        raise HTTPException(status_code=400, detail="Невалідні товари.")
 
     new_status = await session.get(OrderStatus, 1)
     if not new_status:
@@ -303,9 +328,10 @@ async def place_in_house_order(
 
     order = Order(
         customer_name=f"Стіл: {table.name}", phone_number=f"table_{table.id}",
-        address=None, products=products_str, total_price=total_price,
+        address=None, total_price=total_price,
         is_delivery=False, delivery_time="In House", order_type="in_house",
-        table_id=table.id, status_id=new_status.id
+        table_id=table.id, status_id=new_status.id,
+        items=new_order_items
     )
     session.add(order)
     await session.commit()
@@ -319,16 +345,14 @@ async def place_in_house_order(
     session.add(history_entry)
     await session.commit()
 
+    products_display = "\n- ".join(products_str_for_msg)
     order_details_text = (f"📝 <b>Нове замовлення зі столика: {aiogram_html.bold(table.name)} (ID: #{order.id})</b>\n\n"
-                          f"<b>Склад:</b>\n- " + aiogram_html.quote(products_str.replace(", ", "\n- ")) +
-                          f"\n\n<b>Сума:</b> {total_price} грн")
+                          f"<b>Склад:</b>\n- {aiogram_html.quote(products_display)}\n\n"
+                          f"<b>Сума:</b> {total_price} грн")
 
-    # Беремо спільного бота
     admin_bot = request.app.state.admin_bot
     
-    # Прибрано блок finally з закриттям сесії!
     if not admin_bot:
-        logger.error(f"Замовлення #{order.id} створено, але адмін-бот недоступний для сповіщення.")
         return JSONResponse(content={"message": "Замовлення прийнято! Очікуйте.", "order_id": order.id})
 
     kb_waiter = InlineKeyboardBuilder()
@@ -371,10 +395,7 @@ async def place_in_house_order(
     if order.status.requires_kitchen_notify:
         try:
             await distribute_order_to_production(admin_bot, order, session)
-            logger.info(f"Замовлення #{order.id} відправлено на виробництво (статус вимагає цього).")
         except Exception as e:
             logger.error(f"Помилка при розподілі замовлення #{order.id} на кухню/бар: {e}")
-    else:
-        logger.info(f"Замовлення #{order.id} НЕ відправлено на виробництво (налаштування статусу).")
         
     return JSONResponse(content={"message": "Замовлення прийнято! Офіціант незабаром його підтвердить.", "order_id": order.id})

@@ -7,17 +7,16 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request
 from fastapi.responses import RedirectResponse, HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 from aiogram import Bot
 from urllib.parse import quote_plus
 from aiogram.utils.keyboard import InlineKeyboardBuilder, InlineKeyboardButton
 import re
 
-from models import Order, OrderStatus, Employee, Role, OrderStatusHistory, Settings, Product
+from models import Order, OrderStatus, Employee, Role, OrderStatusHistory, Settings, Product, OrderItem
 from templates import ADMIN_HTML_TEMPLATE, ADMIN_ORDER_MANAGE_BODY
 from dependencies import get_db_session, check_credentials
 from notification_manager import notify_all_parties_on_status_change
-from utils import parse_products_str
 # --- КАСА: Імпорт сервісів ---
 from cash_service import link_order_to_shift, register_employee_debt
 
@@ -40,30 +39,26 @@ async def get_manage_order_page(
             joinedload(Order.status),
             joinedload(Order.courier),
             joinedload(Order.history).joinedload(OrderStatusHistory.status),
-            joinedload(Order.table) 
+            joinedload(Order.table),
+            selectinload(Order.items) # Завантажуємо товари
         ]
     )
     if not order:
         raise HTTPException(status_code=404, detail="Замовлення не знайдено")
 
     # --- Формування списку товарів з іконками цехів ---
-    products_map = parse_products_str(order.products)
     products_html_list = []
     
-    if products_map:
-        product_names = list(products_map.keys())
-        products_res = await session.execute(select(Product))
-        all_products = products_res.scalars().all()
-        db_products = {p.name.strip(): p for p in all_products}
-
-        for name, qty in products_map.items():
+    if order.items:
+        for item in order.items:
             icon = "❓"
-            if prod := db_products.get(name.strip()):
-                if prod.preparation_area == 'kitchen':
-                    icon = "🍳" 
-                elif prod.preparation_area == 'bar':
-                    icon = "🍹" 
-            products_html_list.append(f"<li>{icon} {html.escape(name)} x {qty}</li>")
+            # Визначаємо іконку на основі збереженого preparation_area
+            if item.preparation_area == 'kitchen':
+                icon = "🍳" 
+            elif item.preparation_area == 'bar':
+                icon = "🍹" 
+            
+            products_html_list.append(f"<li>{icon} {html.escape(item.product_name)} x {item.quantity} ({item.price_at_moment} грн)</li>")
     
     products_html = "<ul>" + "".join(products_html_list) + "</ul>" if products_html_list else "<i>Товарів немає</i>"
     # ---------------------------------------------------
@@ -156,7 +151,9 @@ async def web_set_order_status(
     if not order:
         raise HTTPException(status_code=404, detail="Замовлення не знайдено")
     
-    order.payment_method = payment_method
+    # Забороняємо змінювати метод оплати, якщо замовлення вже закрите (щоб не зламати касу)
+    if not (order.status.is_completed_status or order.status.is_cancelled_status):
+        order.payment_method = payment_method
 
     # Перевірка: якщо замовлення вже закрите
     if order.status.is_completed_status or order.status.is_cancelled_status:
@@ -178,6 +175,8 @@ async def web_set_order_status(
     # --- ЛОГІКА КАСИ ПРИ ЗАКРИТТІ ЧЕРЕЗ АДМІНКУ ---
     if new_status.is_completed_status:
         # 1. Прив'язуємо до зміни (адміна/касира або будь-якої відкритої)
+        # Тут ми не знаємо ID співробітника-адміна з вебу, тому передаємо None, 
+        # і функція знайде першу відкриту зміну.
         await link_order_to_shift(session, order, None) 
         
         # 2. Якщо це готівка, вирішуємо, де гроші
@@ -190,7 +189,7 @@ async def web_set_order_status(
                 await register_employee_debt(session, order, order.accepted_by_waiter_id)
             else:
                 # Якщо нікого немає (Самовивіз або адмін сам продав)
-                # Вважаємо, що гроші відразу потрапили в касу
+                # Вважаємо, що гроші відразу потрапили в касу (так як адмін зазвичай стоїть на касі)
                 order.is_cash_turned_in = True
     # ----------------------------------------------
 
@@ -230,8 +229,9 @@ async def web_assign_courier(
         raise HTTPException(status_code=400, detail="Замовлення вже закрите. Призначення кур'єра заборонено.")
 
     admin_bot = request.app.state.admin_bot
+    # Не кидаємо помилку, якщо бот не налаштований, просто логуємо
     if not admin_bot:
-         raise HTTPException(status_code=500, detail="Бот не налаштований для відправки сповіщень.")
+         logger.warning("Admin bot not configured, notifications skipped.")
          
     admin_chat_id_str = os.environ.get('ADMIN_CHAT_ID')
 
@@ -240,7 +240,7 @@ async def web_assign_courier(
 
     if old_courier_id and old_courier_id != courier_id:
         old_courier = await session.get(Employee, old_courier_id)
-        if old_courier and old_courier.telegram_user_id:
+        if old_courier and old_courier.telegram_user_id and admin_bot:
             try:
                 await admin_bot.send_message(old_courier.telegram_user_id, f"❗️ Замовлення #{order.id} було знято з вас оператором.")
             except Exception as e:
@@ -256,7 +256,7 @@ async def web_assign_courier(
         order.courier_id = courier_id
         new_courier_name = new_courier.full_name
         
-        if new_courier.telegram_user_id:
+        if new_courier.telegram_user_id and admin_bot:
             try:
                 kb_courier = InlineKeyboardBuilder()
                 statuses_res = await session.execute(select(OrderStatus).where(OrderStatus.visible_to_courier == True).order_by(OrderStatus.id))
@@ -270,7 +270,7 @@ async def web_assign_courier(
                     
                 await admin_bot.send_message(
                     new_courier.telegram_user_id,
-                    f"🔔 Вам призначено нове замовлення!\n\n<b>Замовлення #{order.id}</b>\nАдреса: {html.escape(order.address or 'Самовивіз')}\nТелефон: {html.escape(order.phone_number)}\nСума: {order.total_price} грн.",
+                    f"🔔 Вам призначено нове замовлення!\n\n<b>Замовлення #{order.id}</b>\nАдреса: {html.escape(order.address or 'Самовивіз')}\nТелефон: {html.escape(order.phone_number or 'Не вказано')}\nСума: {order.total_price} грн.",
                     reply_markup=kb_courier.as_markup()
                 )
             except Exception as e:
@@ -278,7 +278,7 @@ async def web_assign_courier(
     
     await session.commit()
 
-    if admin_chat_id_str:
+    if admin_chat_id_str and admin_bot:
         try:
             await admin_bot.send_message(admin_chat_id_str, f"👤 Замовленню #{order.id} призначено кур'єра: <b>{html.escape(new_courier_name)}</b> (через веб-панель)")
         except Exception: pass

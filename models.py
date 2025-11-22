@@ -64,7 +64,8 @@ class Employee(Base):
     is_on_shift: Mapped[bool] = mapped_column(sa.Boolean, default=False, server_default=text("false"), nullable=False)
     
     # Баланс готівки "на руках" у співробітника
-    cash_balance: Mapped[float] = mapped_column(sa.Numeric(10, 2), default=0.0, server_default=text("0.00"), comment="Гроші, які співробітник винен касі")
+    # ВИПРАВЛЕНО: Використовуємо Numeric для грошей
+    cash_balance: Mapped[float] = mapped_column(sa.Numeric(10, 2), default=0.00, server_default=text("0.00"), comment="Гроші, які співробітник винен касі")
 
     current_order_id: Mapped[Optional[int]] = mapped_column(sa.ForeignKey('orders.id', ondelete="SET NULL"), nullable=True)
     current_order: Mapped[Optional["Order"]] = relationship("Order", foreign_keys="Employee.current_order_id")
@@ -88,7 +89,8 @@ class Product(Base):
     name: Mapped[str] = mapped_column(sa.String(100))
     description: Mapped[str] = mapped_column(sa.String(500), nullable=True)
     image_url: Mapped[str] = mapped_column(sa.String(255), nullable=True)
-    price: Mapped[int] = mapped_column() # Ціна продажу
+    # ВИПРАВЛЕНО: Використовуємо Numeric для ціни
+    price: Mapped[float] = mapped_column(sa.Numeric(10, 2), nullable=False) 
     is_active: Mapped[bool] = mapped_column(sa.Boolean, default=True, server_default=text("true"))
     category_id: Mapped[int] = mapped_column(sa.ForeignKey('categories.id'))
     category: Mapped["Category"] = relationship("Category", back_populates="products")
@@ -126,6 +128,7 @@ class CashShift(Base):
     start_time: Mapped[datetime] = mapped_column(sa.DateTime, default=func.now())
     end_time: Mapped[Optional[datetime]] = mapped_column(sa.DateTime, nullable=True)
     
+    # ВИПРАВЛЕНО: Numeric
     start_cash: Mapped[float] = mapped_column(sa.Numeric(10, 2), default=0.0, comment="Залишок на початок зміни")
     end_cash_actual: Mapped[Optional[float]] = mapped_column(sa.Numeric(10, 2), nullable=True, comment="Фактичний залишок при закритті")
     
@@ -147,6 +150,7 @@ class CashTransaction(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     shift_id: Mapped[int] = mapped_column(sa.ForeignKey('cash_shifts.id'), nullable=False)
     
+    # ВИПРАВЛЕНО: Numeric
     amount: Mapped[float] = mapped_column(sa.Numeric(10, 2), nullable=False)
     transaction_type: Mapped[str] = mapped_column(sa.String(20), nullable=False, comment="'in' - внесення, 'out' - вилучення, 'handover' - здача виручки")
     comment: Mapped[str] = mapped_column(sa.String(255), nullable=True)
@@ -156,13 +160,38 @@ class CashTransaction(Base):
 
 # -----------------------------------
 
+# НОВА ТАБЛИЦЯ: OrderItem
+class OrderItem(Base):
+    __tablename__ = 'order_items'
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    order_id: Mapped[int] = mapped_column(sa.ForeignKey('orders.id', ondelete="CASCADE"), nullable=False, index=True)
+    product_id: Mapped[Optional[int]] = mapped_column(sa.ForeignKey('products.id', ondelete="SET NULL"), nullable=True)
+    
+    # Зберігаємо копію назви та ціни на момент замовлення (щоб зміни в меню не ламали історію)
+    product_name: Mapped[str] = mapped_column(sa.String(100), nullable=False)
+    quantity: Mapped[int] = mapped_column(sa.Integer, default=1, nullable=False)
+    price_at_moment: Mapped[float] = mapped_column(sa.Numeric(10, 2), nullable=False)
+    
+    # Категорія або цех для фільтрації (опціонально, але корисно)
+    preparation_area: Mapped[str] = mapped_column(sa.String(20), default='kitchen', server_default=text("'kitchen'"))
+
+    order: Mapped["Order"] = relationship("Order", back_populates="items")
+    product: Mapped["Product"] = relationship("Product")
+
+
 class Order(Base):
     __tablename__ = 'orders'
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     user_id: Mapped[Optional[int]] = mapped_column(sa.BigInteger, nullable=True)
     username: Mapped[Optional[str]] = mapped_column(sa.String(100), nullable=True)
-    products: Mapped[str] = mapped_column()
-    total_price: Mapped[int] = mapped_column()
+    
+    # ВИДАЛЕНО: products: Mapped[str] (Більше не використовується, дані беруться з items)
+    # Замість нього використовуємо зв'язок items
+    items: Mapped[list["OrderItem"]] = relationship("OrderItem", back_populates="order", cascade="all, delete-orphan", lazy='selectin')
+    
+    # ВИПРАВЛЕНО: Numeric
+    total_price: Mapped[float] = mapped_column(sa.Numeric(10, 2), default=0.00)
+    
     customer_name: Mapped[str] = mapped_column(sa.String(100), nullable=True)
     phone_number: Mapped[str] = mapped_column(sa.String(20), nullable=True, index=True)
     address: Mapped[str] = mapped_column(sa.String(255), nullable=True)
@@ -172,7 +201,11 @@ class Order(Base):
     delivery_time: Mapped[str] = mapped_column(sa.String(50), nullable=True, default="Якнайшвидше")
     courier_id: Mapped[Optional[int]] = mapped_column(sa.ForeignKey('employees.id', ondelete="SET NULL"), nullable=True)
     courier: Mapped[Optional["Employee"]] = relationship("Employee", foreign_keys="Order.courier_id")
+    
     created_at: Mapped[datetime] = mapped_column(sa.DateTime, default=func.now(), server_default=func.now())
+    # НОВЕ ПОЛЕ: Час закриття замовлення (для аналітики)
+    closed_at: Mapped[Optional[datetime]] = mapped_column(sa.DateTime, nullable=True)
+    
     completed_by_courier_id: Mapped[Optional[int]] = mapped_column(sa.ForeignKey('employees.id'), nullable=True)
     completed_by_courier: Mapped[Optional["Employee"]] = relationship("Employee", foreign_keys="Order.completed_by_courier_id")
     history: Mapped[list["OrderStatusHistory"]] = relationship("OrderStatusHistory", back_populates="order", cascade="all, delete-orphan", lazy='selectin')
@@ -190,6 +223,20 @@ class Order(Base):
     cash_shift: Mapped[Optional["CashShift"]] = relationship("CashShift", back_populates="orders")
     
     is_cash_turned_in: Mapped[bool] = mapped_column(sa.Boolean, default=False, server_default=text("false"), comment="Чи здана готівка касиру")
+
+    # --- НОВІ ПОЛЯ ДЛЯ УНИКНЕННЯ КОЛІЗІЙ (Кухня vs Бар) ---
+    kitchen_done: Mapped[bool] = mapped_column(sa.Boolean, default=False, server_default=text("false"))
+    bar_done: Mapped[bool] = mapped_column(sa.Boolean, default=False, server_default=text("false"))
+
+    @property
+    def products_text(self) -> str:
+        """
+        Динамічна властивість для сумісності зі старим кодом (де використовувався рядок).
+        Генерує рядок зі списку items.
+        """
+        if not self.items:
+            return ""
+        return ", ".join([f"{item.product_name} x {item.quantity}" for item in self.items])
 
 
 class OrderStatusHistory(Base):

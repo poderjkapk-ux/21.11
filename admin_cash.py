@@ -192,7 +192,6 @@ async def handover_form(
         raise HTTPException(status_code=404, detail="Співробітника не знайдено")
 
     # Отримуємо відкриту зміну касира (для прив'язки)
-    # Вважаємо, що "active_shift" - це будь-яка відкрита зміна
     active_shift_res = await session.execute(select(CashShift).where(CashShift.is_closed == False))
     active_shift = active_shift_res.scalars().first()
     
@@ -200,11 +199,6 @@ async def handover_form(
         return HTMLResponse("<h1>Спочатку відкрийте касову зміну!</h1><a href='/admin/cash'>Назад</a>")
 
     # Знаходимо замовлення, за які співробітник винен гроші
-    # Це замовлення, де:
-    # 1. payment_method = 'cash'
-    # 2. is_cash_turned_in = False
-    # 3. Співробітник є виконавцем (кур'єром або офіціантом)
-    
     orders_res = await session.execute(
         select(Order).where(
             Order.payment_method == 'cash',
@@ -219,7 +213,7 @@ async def handover_form(
     orders = orders_res.scalars().all()
     
     rows = ""
-    total_sum = 0
+    total_sum = Decimal(0)
     for o in orders:
         total_sum += o.total_price
         rows += f"""
@@ -232,7 +226,6 @@ async def handover_form(
         </tr>
         """
     
-    # УВАГА: Це звичайний рядок, не f-string, тому фігурні дужки тут ОК
     js_script = """
     <script>
         function recalcTotal() {
@@ -247,7 +240,6 @@ async def handover_form(
     </script>
     """
 
-    # УВАГА: Це f-string, тому дужки в JS нижче подвоєні {{ }}
     body = f"""
     {js_script}
     <div class="card">
@@ -399,7 +391,6 @@ async def print_z_report(shift_id: int, session: AsyncSession = Depends(get_db_s
     theoretical = shift.start_cash + shift.total_sales_cash + shift.service_in - shift.service_out
     diff = shift.end_cash_actual - theoretical
     
-    # В цьому f-string дужки для CSS мають бути подвоєні: {{ }}
     html_report = f"""
     <!DOCTYPE html>
     <html>

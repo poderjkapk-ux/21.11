@@ -33,6 +33,11 @@ async def open_new_shift(session: AsyncSession, employee_id: int, start_cash: fl
     if active_shift:
         raise ValueError("У цього співробітника вже є відкрита зміна.")
 
+    # Перевірка, чи немає іншої відкритої зміни (одна каса на всіх)
+    any_shift = await get_any_open_shift(session)
+    if any_shift:
+         raise ValueError(f"Зміна вже відкрита співробітником {any_shift.employee_id}. Закрийте її спочатку.")
+
     new_shift = CashShift(
         employee_id=employee_id,
         start_time=datetime.now(),
@@ -58,7 +63,7 @@ async def link_order_to_shift(session: AsyncSession, order: Order, employee_id: 
         shift = await get_open_shift(session, employee_id)
     
     if not shift:
-        # Якщо не знайдено, беремо будь-яку активну зміну
+        # Якщо не знайдено, беремо будь-яку активну зміну (загальна каса)
         shift = await get_any_open_shift(session)
     
     if shift:
@@ -82,7 +87,7 @@ async def register_employee_debt(session: AsyncSession, order: Order, employee_i
         return
 
     # Перетворюємо в Decimal для точності
-    amount = Decimal(order.total_price)
+    amount = Decimal(str(order.total_price))
     
     # Оновлюємо баланс співробітника
     employee.cash_balance = Decimal(employee.cash_balance) + amount
@@ -115,14 +120,14 @@ async def process_handover(session: AsyncSession, cashier_shift_id: int, employe
     total_amount = Decimal(0)
     
     for order in orders:
-        # Перевіряємо, чи дійсно це замовлення цього співробітника (завершене ним або він кур'єр)
-        # Для спрощення, якщо касир обрав ці ID, ми довіряємо вибору
-        
-        amount = Decimal(order.total_price)
+        amount = Decimal(str(order.total_price))
         total_amount += amount
         
+        # Гроші потрапили в касу
         order.is_cash_turned_in = True
-        # Прив'язуємо замовлення до зміни касира, який прийняв гроші (якщо ще не прив'язано)
+        
+        # Якщо замовлення не було прив'язане до зміни (наприклад, стара зміна закрилась), прив'язуємо до поточної
+        # Це гарантує, що гроші потраплять у Z-звіт цієї зміни
         if not order.cash_shift_id:
             order.cash_shift_id = shift.id
 
@@ -131,7 +136,7 @@ async def process_handover(session: AsyncSession, cashier_shift_id: int, employe
     if employee.cash_balance < 0:
         employee.cash_balance = Decimal(0) # Захист від мінуса
 
-    # Додаємо транзакцію в касу
+    # Додаємо транзакцію в касу (просто як лог події, для балансу використовується is_cash_turned_in)
     tx = CashTransaction(
         shift_id=shift.id,
         amount=total_amount,
@@ -139,9 +144,6 @@ async def process_handover(session: AsyncSession, cashier_shift_id: int, employe
         comment=f"Здача виручки: {employee.full_name} (Зам: {', '.join(map(str, order_ids))})"
     )
     session.add(tx)
-    
-    # Оновлюємо статистику зміни ("Внесення" або окреме поле, тут додамо до service_in для простоти, або краще рахувати окремо при get_shift_statistics)
-    # В цій моделі ми рахуємо статистику "на льоту" в get_shift_statistics, тому тут просто зберігаємо транзакцію.
     
     await session.commit()
     return total_amount
@@ -152,14 +154,7 @@ async def get_shift_statistics(session: AsyncSession, shift_id: int):
     if not shift:
         return None
 
-    # 1. Продажі (замовлення, закриті безпосередньо в цю зміну або прив'язані до неї)
-    # УВАГА: Для готівки ми враховуємо ТІЛЬКИ ті, що `is_cash_turned_in == True` І прив'язані до цієї зміни?
-    # АБО ми рахуємо `handover` транзакції як прихід готівки.
-    # Найкращий підхід: 
-    #  - Продажі (Total Sales) - це сума всіх чеків за зміну (статистика бізнесу).
-    #  - Готівка в касі (Cash Drawer) - це стартова + прямі оплати + здача виручки - вилучення.
-
-    # Отримуємо всі замовлення, прив'язані до цієї зміни
+    # 1. Продажі (Всі замовлення, прив'язані до зміни)
     sales_query = select(
         Order.payment_method,
         func.sum(Order.total_price)
@@ -170,17 +165,17 @@ async def get_shift_statistics(session: AsyncSession, shift_id: int):
     sales_res = await session.execute(sales_query)
     sales_data = sales_res.all()
 
-    total_sales_cash_orders = Decimal(0) # Готівкові замовлення (всього продано)
+    total_sales_cash_orders = Decimal(0) # Всього продажів готівкою (в т.ч. ті, що у кур'єрів)
     total_card_sales = Decimal(0)
 
     for method, amount in sales_data:
-        amount_decimal = Decimal(amount) if amount else Decimal(0)
+        amount_decimal = Decimal(str(amount)) if amount else Decimal(0)
         if method == 'cash':
             total_sales_cash_orders += amount_decimal
         elif method == 'card':
             total_card_sales += amount_decimal
 
-    # 2. Службові операції та ЗДАЧА ВИРУЧКИ
+    # 2. Службові операції
     trans_query = select(
         CashTransaction.transaction_type,
         func.sum(CashTransaction.amount)
@@ -193,10 +188,10 @@ async def get_shift_statistics(session: AsyncSession, shift_id: int):
 
     service_in = Decimal(0)
     service_out = Decimal(0)
-    handover_in = Decimal(0) # Гроші, здані кур'єрами/офіціантами
+    handover_in = Decimal(0)
 
     for t_type, amount in trans_data:
-        amount_decimal = Decimal(amount) if amount else Decimal(0)
+        amount_decimal = Decimal(str(amount)) if amount else Decimal(0)
         if t_type == 'in':
             service_in += amount_decimal
         elif t_type == 'out':
@@ -204,58 +199,9 @@ async def get_shift_statistics(session: AsyncSession, shift_id: int):
         elif t_type == 'handover':
             handover_in += amount_decimal
 
-    # 3. Готівка, отримана "на пряму" (наприклад, якщо касир сам закрив замовлення)
-    # Логіка: Якщо замовлення `cash` і `cash_shift_id == shift.id`, то чи це гроші в касі?
-    # Якщо `is_cash_turned_in == True` - значить гроші в касі.
-    # Якщо гроші прийшли через `handover`, вони вже враховані в `handover_in`.
-    # Нам треба знайти замовлення, які оплачені готівкою ПРЯМО В КАСУ (без кур'єра), або де касир був виконавцем.
-    # АЛЕ, для спрощення, ми можемо вважати, що `handover` покриває кур'єрів.
-    # А прямі продажі (якщо касир сам продав) треба додати.
-    # Спрощена модель: Готівка в касі = Start + Handover (від інших) + Service In - Service Out + (Direct Cash Sales).
-    
-    # Direct Cash Sales = Total Cash Sales (змінна вище) - (сума замовлень, які пройшли через Handover).
-    # Це може бути складно порахувати точно без додаткових полів.
-    
-    # АЛЬТЕРНАТИВНИЙ (НАДІЙНІШИЙ) МЕТОД РОЗРАХУНКУ ГОТІВКИ В КАСІ:
-    # Cash In Drawer = Start + Transactions(in) + Transactions(handover) - Transactions(out) 
-    # + Замовлення, які: (cash_shift_id == this_shift) AND (is_cash_turned_in == True) AND (НЕМАЄ транзакції handover для них???)
-    
-    # Давайте зробимо так: 
-    # Якщо касир закриває замовлення сам -> is_cash_turned_in стає True, але Handover транзакція НЕ створюється (бо він сам собі не здає).
-    # Тоді нам треба знайти суму замовлень (cash, is_turned_in=True, shift=this), які НЕ були частиною Handover.
-    # Це складно.
-    
-    # ПРОСТІШЕ:
-    # Вважаємо, що будь-яке закриття замовлення готівкою, прив'язане до зміни, додає гроші в касу, ЯКЩО це не борг.
-    # Якщо це борг (кур'єр), то гроші прийдуть пізніше через Handover.
-    # Отже:
-    # Теоретична готівка = Start 
-    # + (Orders CASH де is_cash_turned_in=True і cash_shift_id=this_shift)
-    # + Service In
-    # - Service Out
-    # А Handover транзакції ми використовуємо тільки для логування? Ні, вони дублюватимуть суму.
-    
-    # РІШЕННЯ:
-    # Ми будемо використовувати `CashTransaction` типу `handover` як джерело правди про прихід від кур'єрів.
-    # А прямі продажі касира (де він сам прийняв гроші) треба додати.
-    # Як їх розрізнити? 
-    # В `register_employee_debt` ми ставимо `is_cash_turned_in = False`.
-    # Якщо касир закриває замовлення (наприклад, самовивіз), ми повинні ставити `is_cash_turned_in = True` відразу.
-    # І ці гроші повинні плюсуватися.
-    
-    # Давайте перерахуємо так:
-    # 1. Гроші від прямих продажів (Самовивіз / Офіціант розрахував на касі):
-    #    Це замовлення, де `is_cash_turned_in = True`, `payment_method='cash'`, `cash_shift_id = shift.id`.
-    #    Але сюди потраплять і ті, що здані через Handover.
-    # 2. Щоб не двоїти, ми при Handover НЕ змінюємо `cash_shift_id` на зміну касира? Ні, треба міняти.
-    
-    # ДАВАЙТЕ ТАК:
-    # Cash Drawer = Start + Service In - Service Out + SUM(Order.total where shift=this AND cash AND turned_in=True).
-    # Транзакції `handover` ігноруємо в математиці балансу, вони просто показують факт передачі.
-    # Чому? Тому що коли ми робимо Handover, ми ставимо `is_cash_turned_in = True` і `cash_shift_id = active_shift`.
-    # Отже, ці замовлення потраплять в суму `SUM(...)`.
-    # А прямі продажі касира відразу стають `turned_in=True` і теж потрапляють в суму.
-    # Все сходиться!
+    # 3. Готівка в касі (Cash Drawer)
+    # Формула: Start + (Замовлення CASH, де turned_in=True) + Service In - Service Out
+    # Handover транзакції ігноруємо в формулі, бо вони дублюються з turned_in=True.
     
     query_collected_cash = select(func.sum(Order.total_price)).where(
         Order.cash_shift_id == shift_id,
@@ -264,6 +210,8 @@ async def get_shift_statistics(session: AsyncSession, shift_id: int):
     )
     collected_cash_res = await session.execute(query_collected_cash)
     total_collected_cash_orders = collected_cash_res.scalar() or Decimal(0)
+    # Приводимо до Decimal, якщо база повернула float
+    total_collected_cash_orders = Decimal(str(total_collected_cash_orders))
 
     start_cash_decimal = shift.start_cash if shift.start_cash is not None else Decimal(0)
     
@@ -273,12 +221,12 @@ async def get_shift_statistics(session: AsyncSession, shift_id: int):
         "shift_id": shift.id,
         "start_time": shift.start_time,
         "start_cash": start_cash_decimal,
-        "total_sales_cash": total_sales_cash_orders, # Продажі за зміну (включно з погашеними боргами)
+        "total_sales_cash": total_sales_cash_orders, # Загальна сума чеків готівкою
         "total_sales_card": total_card_sales,
         "total_sales": total_sales_cash_orders + total_card_sales,
         "service_in": service_in,
         "service_out": service_out,
-        "handover_in": handover_in, # Просто для інфо
+        "handover_in": handover_in, # Інформаційно
         "theoretical_cash": theoretical_cash
     }
 
