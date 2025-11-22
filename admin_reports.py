@@ -9,7 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, case, desc
 from sqlalchemy.orm import joinedload
 
-from models import Order, OrderStatus, CashTransaction, Employee, OrderItem, Role, Settings
+# Импортируем все необходимые модели, включая CashShift
+from models import Order, OrderStatus, CashTransaction, Employee, OrderItem, Role, Settings, CashShift
 from templates import (
     ADMIN_HTML_TEMPLATE, ADMIN_REPORT_CASH_FLOW_BODY, 
     ADMIN_REPORT_WORKERS_BODY, ADMIN_REPORT_ANALYTICS_BODY
@@ -18,10 +19,11 @@ from dependencies import get_db_session, check_credentials
 
 router = APIRouter()
 
+# --- Вспомогательная функция для дат ---
 async def get_date_range(date_from_str: str | None, date_to_str: str | None):
     today = date.today()
     d_to = datetime.strptime(date_to_str, "%Y-%m-%d").date() if date_to_str else today
-    d_from = datetime.strptime(date_from_str, "%Y-%m-%d").date() if date_from_str else today - timedelta(days=0) # По умолчанию сегодня
+    d_from = datetime.strptime(date_from_str, "%Y-%m-%d").date() if date_from_str else today - timedelta(days=0)
     
     # Начало дня (00:00:00) и Конец дня (23:59:59)
     dt_from = datetime.combine(d_from, time.min)
@@ -29,6 +31,7 @@ async def get_date_range(date_from_str: str | None, date_to_str: str | None):
     
     return d_from, d_to, dt_from, dt_to
 
+# --- 1. ОТЧЕТ: Движение средств ---
 @router.get("/admin/reports/cash_flow", response_class=HTMLResponse)
 async def report_cash_flow(
     date_from: str = Query(None),
@@ -39,11 +42,9 @@ async def report_cash_flow(
     settings = await session.get(Settings, 1) or Settings()
     d_from, d_to, dt_from, dt_to = await get_date_range(date_from, date_to)
 
-    # Получаем ID завершенных статусов
     completed_statuses = await session.execute(select(OrderStatus.id).where(OrderStatus.is_completed_status == True))
     completed_ids = completed_statuses.scalars().all()
 
-    # 1. Анализ Продаж (Orders)
     sales_query = select(
         Order.payment_method,
         func.sum(Order.total_price)
@@ -63,8 +64,10 @@ async def report_cash_flow(
         if method == 'cash': cash_revenue += amount
         elif method == 'card': card_revenue += amount
 
-    # 2. Анализ Транзакций (CashTransaction) - Внесения и Изъятия
-    trans_query = select(CashTransaction).options(joinedload(CashTransaction.shift).joinedload('employee')).where(
+    # Исправленная загрузка связей для транзакций
+    trans_query = select(CashTransaction).options(
+        joinedload(CashTransaction.shift).joinedload(CashShift.employee)
+    ).where(
         CashTransaction.created_at >= dt_from,
         CashTransaction.created_at <= dt_to
     ).order_by(CashTransaction.created_at.desc())
@@ -120,6 +123,7 @@ async def report_cash_flow(
     ))
 
 
+# --- 2. ОТЧЕТ: Персонал (Общий) ---
 @router.get("/admin/reports/workers", response_class=HTMLResponse)
 async def report_workers(
     date_from: str = Query(None),
@@ -133,10 +137,7 @@ async def report_workers(
     completed_statuses = await session.execute(select(OrderStatus.id).where(OrderStatus.is_completed_status == True))
     completed_ids = completed_statuses.scalars().all()
 
-    # Запрос для курьеров и официантов (объединяем логику)
-    # Мы считаем заказы, которые были выполнены определенным сотрудником
-    
-    # 1. Курьеры (completed_by_courier_id)
+    # Курьеры
     courier_stats = await session.execute(
         select(
             Employee.full_name,
@@ -154,7 +155,7 @@ async def report_workers(
         .group_by(Employee.id, Employee.full_name, Role.name)
     )
     
-    # 2. Официанты (accepted_by_waiter_id) - только для in_house заказов
+    # Официанты (только in_house)
     waiter_stats = await session.execute(
         select(
             Employee.full_name,
@@ -174,8 +175,6 @@ async def report_workers(
     )
 
     all_stats = list(courier_stats.all()) + list(waiter_stats.all())
-    
-    # Сортируем по сумме продаж
     all_stats.sort(key=lambda x: x.total or 0, reverse=True)
 
     rows = ""
@@ -209,6 +208,7 @@ async def report_workers(
     ))
 
 
+# --- 3. ОТЧЕТ: Аналитика блюд ---
 @router.get("/admin/reports/analytics", response_class=HTMLResponse)
 async def report_analytics(
     date_from: str = Query(None),
@@ -222,8 +222,6 @@ async def report_analytics(
     completed_statuses = await session.execute(select(OrderStatus.id).where(OrderStatus.is_completed_status == True))
     completed_ids = completed_statuses.scalars().all()
 
-    # Агрегация по товарам (OrderItems)
-    # Учитываем цену на момент заказа (price_at_moment)
     query = select(
         OrderItem.product_name,
         func.sum(OrderItem.quantity).label("total_qty"),
@@ -270,6 +268,118 @@ async def report_analytics(
 
     return HTMLResponse(ADMIN_HTML_TEMPLATE.format(
         title="Отчет: Аналитика",
+        body=body,
+        site_title=settings.site_title,
+        reports_active="active",
+        **{k: "" for k in ["main_active", "orders_active", "clients_active", "tables_active", "products_active", "categories_active", "menu_active", "employees_active", "statuses_active", "settings_active", "design_active"]}
+    ))
+
+
+# --- 4. НОВЫЙ ИНФОРМАТИВНЫЙ ОТЧЕТ: Курьеры ---
+@router.get("/admin/reports/couriers", response_class=HTMLResponse)
+async def report_couriers(
+    date_from: str = Query(None),
+    date_to: str = Query(None),
+    session: AsyncSession = Depends(get_db_session),
+    username: str = Depends(check_credentials)
+):
+    """Расширенный отчет по эффективности курьеров."""
+    settings = await session.get(Settings, 1) or Settings()
+    d_from, d_to, dt_from, dt_to = await get_date_range(date_from, date_to)
+    
+    # Только завершенные заказы
+    completed_statuses = await session.execute(select(OrderStatus.id).where(OrderStatus.is_completed_status == True))
+    completed_ids = completed_statuses.scalars().all()
+
+    # Запрос с разбивкой по методам оплаты (Cash vs Card) и общим итогам
+    query = select(
+        Employee.full_name,
+        func.count(Order.id).label("total_orders"),
+        func.sum(Order.total_price).label("total_revenue"),
+        func.sum(case((Order.payment_method == 'cash', Order.total_price), else_=0)).label("cash_total"),
+        func.sum(case((Order.payment_method == 'card', Order.total_price), else_=0)).label("card_total")
+    ).join(
+        Employee, Order.completed_by_courier_id == Employee.id
+    ).where(
+        Order.created_at >= dt_from,
+        Order.created_at <= dt_to,
+        Order.status_id.in_(completed_ids)
+    ).group_by(Employee.id, Employee.full_name).order_by(desc("total_orders"))
+
+    res = await session.execute(query)
+    courier_data = res.all()
+
+    rows = ""
+    total_all_revenue = Decimal(0)
+    
+    if not courier_data:
+        rows = "<tr><td colspan='6'>Нет доставок за выбранный период</td></tr>"
+    else:
+        for row in courier_data:
+            total_orders = row.total_orders
+            total_revenue = row.total_revenue or Decimal(0)
+            cash_total = row.cash_total or Decimal(0)
+            card_total = row.card_total or Decimal(0)
+            
+            avg_check = (total_revenue / total_orders) if total_orders > 0 else 0
+            total_all_revenue += total_revenue
+
+            rows += f"""
+            <tr>
+                <td style="font-weight:bold;">{html.escape(row.full_name)}</td>
+                <td style="text-align:center;">{total_orders}</td>
+                <td style="color:green; font-weight:bold;">{total_revenue:.2f} грн</td>
+                <td>{cash_total:.2f} грн</td>
+                <td>{card_total:.2f} грн</td>
+                <td>{avg_check:.2f} грн</td>
+            </tr>
+            """
+
+    # Встроенный HTML шаблон для этого отчета, чтобы не менять templates.py
+    COURIER_REPORT_TEMPLATE = """
+    <div class="card">
+        <h2>🚚 Детальный отчет по курьерам</h2>
+        <form action="/admin/reports/couriers" method="get" class="search-form" style="background: #f9f9f9; padding: 15px; border-radius: 8px; margin-bottom: 20px;">
+            <label>Период:</label>
+            <input type="date" name="date_from" value="{date_from_val}" required>
+            <span>—</span>
+            <input type="date" name="date_to" value="{date_to_val}" required>
+            <button type="submit">Показать</button>
+        </form>
+        
+        <div style="margin-bottom: 15px; padding: 10px; background: #e8f5e9; border-radius: 5px; display: inline-block;">
+            <strong>Всего продаж (доставка):</strong> {total_all_revenue:.2f} грн
+        </div>
+
+        <div class="table-wrapper">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Курьер</th>
+                        <th style="text-align:center;">Заказов</th>
+                        <th>Выручка (Всего)</th>
+                        <th>💵 Наличные</th>
+                        <th>💳 Карта</th>
+                        <th>Средний чек</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {rows}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    """
+
+    body = COURIER_REPORT_TEMPLATE.format(
+        date_from_val=d_from,
+        date_to_val=d_to,
+        rows=rows,
+        total_all_revenue=total_all_revenue
+    )
+
+    return HTMLResponse(ADMIN_HTML_TEMPLATE.format(
+        title="Отчет: Курьеры",
         body=body,
         site_title=settings.site_title,
         reports_active="active",

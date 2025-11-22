@@ -38,7 +38,7 @@ from aiogram.fsm.state import State, StatesGroup
 from sqlalchemy.orm import joinedload, selectinload
 from sqlalchemy.exc import IntegrityError
 import sqlalchemy as sa
-from sqlalchemy import func, and_, delete
+from sqlalchemy import func, and_, delete, desc
 
 # --- Локальні імпорти ---
 from templates import (
@@ -1423,28 +1423,19 @@ async def delete_employee(employee_id: int, session: AsyncSession = Depends(get_
 @app.get("/admin/reports", response_class=HTMLResponse)
 async def admin_reports_menu(session: AsyncSession = Depends(get_db_session), username: str = Depends(check_credentials)):
     settings = await get_settings(session)
-    body = """<div class="card"><h2>Доступні звіти</h2><ul><li><a href="/admin/reports/couriers">Звіт по замовленнях кур'єрів</a></li></ul></div>"""
-    active_classes = {key: "" for key in ["main_active", "orders_active", "clients_active", "tables_active", "products_active", "categories_active", "menu_active", "employees_active", "statuses_active", "reports_active", "settings_active", "design_active"]}
-    active_classes["reports_active"] = "active"
-    return HTMLResponse(ADMIN_HTML_TEMPLATE.format(title="Звіти", body=body, site_title=settings.site_title, **active_classes))
-
-@app.get("/admin/reports/couriers", response_class=HTMLResponse)
-async def report_couriers(date_from_str: str = Query(None, alias="date_from"), date_to_str: str = Query(None, alias="date_to"), session: AsyncSession = Depends(get_db_session), username: str = Depends(check_credentials)):
-    settings = await get_settings(session)
-    date_to = datetime.strptime(date_to_str, "%Y-%m-%d").date() if date_to_str else date.today()
-    date_from = datetime.strptime(date_from_str, "%Y-%m-%d").date() if date_from_str else date_to - timedelta(days=6)
     
-    completed_ids = (await session.execute(sa.select(OrderStatus.id).where(OrderStatus.is_completed_status == True))).scalars().all()
-    report_data = []
-    if completed_ids:
-        query = sa.select(Employee.full_name, func.count(Order.id).label("cnt")).join(Employee, Order.completed_by_courier_id == Employee.id).where(and_(Order.created_at >= date_from, Order.created_at < date_to + timedelta(days=1), Order.status_id.in_(completed_ids))).group_by(Employee.full_name).order_by(desc("cnt"))
-        report_data = (await session.execute(query)).all()
-
-    report_rows = "".join([f'<tr><td>{html.escape(row.full_name)}</td><td>{row.cnt}</td></tr>' for row in report_data]) or '<tr><td colspan="2">Немає даних</td></tr>'
-    body = ADMIN_REPORTS_BODY.format(date_from=date_from.strftime("%Y-%m-%d"), date_to=date_to.strftime("%Y-%m-%d"), date_from_formatted=date_from.strftime("%d.%m.%Y"), date_to_formatted=date_to.strftime("%d.%m.%Y"), report_rows=report_rows)
+    # ВИПРАВЛЕННЯ: Використовуємо ADMIN_REPORTS_BODY з templates.py, де є всі кнопки
+    body = ADMIN_REPORTS_BODY
+    
     active_classes = {key: "" for key in ["main_active", "orders_active", "clients_active", "tables_active", "products_active", "categories_active", "menu_active", "employees_active", "statuses_active", "reports_active", "settings_active", "design_active"]}
     active_classes["reports_active"] = "active"
-    return HTMLResponse(ADMIN_HTML_TEMPLATE.format(title="Звіт по кур'єрах", body=body, site_title=settings.site_title, **active_classes))
+    
+    return HTMLResponse(ADMIN_HTML_TEMPLATE.format(
+        title="Звіти", 
+        body=body, 
+        site_title=settings.site_title, 
+        **active_classes
+    ))
 
 # --- ОБРОБНИК GET ЗАПИТУ ДЛЯ НАЛАШТУВАНЬ ---
 @app.get("/admin/settings", response_class=HTMLResponse)
